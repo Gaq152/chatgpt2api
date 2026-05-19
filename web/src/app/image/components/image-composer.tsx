@@ -85,6 +85,7 @@ const aspectOptions = [
 ];
 const countOptions = Array.from({ length: 10 }, (_, index) => String(index + 1));
 
+
 export function ImageComposer({
   prompt,
   imageCount,
