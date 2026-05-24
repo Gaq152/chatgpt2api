@@ -64,6 +64,21 @@ const accountStatusOptions: { label: string; value: AccountStatus | "all" }[] = 
   { label: "禁用", value: "禁用" },
 ];
 
+const SOURCE_LABELS: Record<string, string> = {
+  manual: "手动上传",
+  register: "注册机",
+  sub2api: "Sub2API",
+  cpa: "CPA",
+};
+
+function displayAccountSource(account: Account) {
+  return (account.source && String(account.source)) || "manual";
+}
+
+function sourceLabel(value: string) {
+  return SOURCE_LABELS[value] || value;
+}
+
 const statusMeta: Record<
   AccountStatus,
   {
@@ -191,6 +206,7 @@ function AccountsPageContent() {
   const [query, setQuery] = useState("");
   const [typeFilter, setTypeFilter] = useState("all");
   const [statusFilter, setStatusFilter] = useState<AccountStatus | "all">("all");
+  const [sourceFilter, setSourceFilter] = useState("all");
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState("10");
   const [editingAccount, setEditingAccount] = useState<Account | null>(null);
@@ -235,9 +251,10 @@ function AccountsPageContent() {
         normalizedQuery.length === 0 || (account.email ?? "").toLowerCase().includes(normalizedQuery);
       const typeMatched = typeFilter === "all" || displayAccountType(account) === typeFilter;
       const statusMatched = statusFilter === "all" || account.status === statusFilter;
-      return searchMatched && typeMatched && statusMatched;
+      const sourceMatched = sourceFilter === "all" || displayAccountSource(account) === sourceFilter;
+      return searchMatched && typeMatched && statusMatched && sourceMatched;
     });
-  }, [accounts, query, statusFilter, typeFilter]);
+  }, [accounts, query, sourceFilter, statusFilter, typeFilter]);
 
   const pageCount = Math.max(1, Math.ceil(filteredAccounts.length / Number(pageSize)));
   const safePage = Math.min(page, pageCount);
@@ -264,6 +281,15 @@ function AccountsPageContent() {
     ],
     [accounts],
   );
+
+  const accountSourceOptions = useMemo(() => {
+    const sources = Array.from(new Set(accounts.map(displayAccountSource))).filter(Boolean);
+    sources.sort((a, b) => a.localeCompare(b));
+    return [
+      { label: "全部来源", value: "all" },
+      ...sources.map((value) => ({ label: sourceLabel(value), value })),
+    ];
+  }, [accounts]);
 
   const selectedTokens = useMemo(() => {
     const selectedSet = new Set(selectedIds);
@@ -553,6 +579,24 @@ function AccountsPageContent() {
               </SelectTrigger>
               <SelectContent>
                 {accountTypeOptions.map((option) => (
+                  <SelectItem key={option.value} value={option.value}>
+                    {option.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Select
+              value={sourceFilter}
+              onValueChange={(value) => {
+                setSourceFilter(value);
+                setPage(1);
+              }}
+            >
+              <SelectTrigger className="h-10 w-full rounded-xl border-stone-200 bg-white/85 lg:w-[150px]">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {accountSourceOptions.map((option) => (
                   <SelectItem key={option.value} value={option.value}>
                     {option.label}
                   </SelectItem>
