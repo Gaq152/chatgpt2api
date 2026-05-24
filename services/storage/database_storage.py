@@ -35,11 +35,13 @@ class DatabaseStorageBackend(StorageBackend):
 
     def __init__(self, database_url: str):
         self.database_url = database_url
-        self.engine = create_engine(
-            database_url,
-            pool_pre_ping=True,  # 自动检测连接是否有效
-            pool_recycle=3600,   # 1小时回收连接
-        )
+        engine_kwargs: dict[str, Any] = {
+            "pool_pre_ping": True,
+            "pool_recycle": 3600,
+        }
+        if database_url.startswith("sqlite"):
+            engine_kwargs["connect_args"] = {"check_same_thread": False}
+        self.engine = create_engine(database_url, **engine_kwargs)
         Base.metadata.create_all(self.engine)
         self.Session = sessionmaker(bind=self.engine)
 
