@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import os
 import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -52,6 +53,7 @@ class AuthService:
         self._items = self._load()
         self._last_used_flush_at: dict[str, datetime] = {}
         self._quota_flush_at: dict[str, datetime] = {}
+        self._backfill_default_user_quota()
 
     @staticmethod
     def _clean(value: object) -> str:
@@ -113,6 +115,38 @@ class AuthService:
 
     def _reload_locked(self) -> None:
         self._items = self._load()
+
+    def _backfill_default_user_quota(self) -> None:
+        """启动时把 quota_24h 为空的老 user key 补成 DEFAULT_USER_QUOTA_24H。
+
+        env 未配置或不是正整数时跳过；写盘失败也吞掉，避免阻塞服务启动。
+        """
+        raw = os.getenv("DEFAULT_USER_QUOTA_24H", "").strip()
+        if not raw:
+            return
+        try:
+            default_quota = int(raw)
+        except ValueError:
+            return
+        if default_quota <= 0:
+            return
+        with self._lock:
+            changed = False
+            for index, item in enumerate(self._items):
+                if str(item.get("role") or "").strip().lower() != "user":
+                    continue
+                quota = item.get("quota_24h")
+                if isinstance(quota, int) and quota > 0:
+                    continue
+                next_item = dict(item)
+                next_item["quota_24h"] = default_quota
+                self._items[index] = next_item
+                changed = True
+            if changed:
+                try:
+                    self._save()
+                except Exception:
+                    pass
 
     @staticmethod
     def _public_item(item: dict[str, object]) -> dict[str, object]:

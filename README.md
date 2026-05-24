@@ -83,6 +83,22 @@ environment:
   - DATABASE_URL=postgresql://user:password@host:5432/dbname
 ```
 
+### 升级到 v1.2.0：老 user key 自动补配额
+
+v1.2.0 开始，新建普通用户密钥时必须显式填写 24h 调用上限。对于旧版本已经创建、`quota_24h` 为空的老 key，可以通过环境变量 `DEFAULT_USER_QUOTA_24H` 在启动时一次性补默认值，避免漏配置：
+
+```yaml
+environment:
+  - DEFAULT_USER_QUOTA_24H=50
+```
+
+行为：
+
+- 仅作用一次，把数据库中所有 `role=user` 且 `quota_24h` 为空的项写为该值
+- 已经在界面里改过配额的 key 不会被覆盖
+- 留空或非正整数则跳过
+- 之后通过界面新建的 user key 仍需在表单里手动填写配额
+
 ## 功能
 
 ### API 兼容能力

@@ -24,6 +24,9 @@ services:
       
       # 认证密钥 (可选，覆盖 config.json)
       # - CHATGPT2API_AUTH_KEY=your_secret_key
-      
+
       # 基础 URL (可选)
       # - CHATGPT2API_BASE_URL=https://your-domain.com
+
+      # 普通用户默认 24h 调用上限（可选，仅给 v1.2.0 之前创建、quota_24h 为空的老 user key 一次性补默认值；新建 key 仍需在界面手动填写）
+      # - DEFAULT_USER_QUOTA_24H=50
