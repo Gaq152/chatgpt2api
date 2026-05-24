@@ -93,6 +93,17 @@ class AccountService:
         normalized["fail"] = int(normalized.get("fail") or 0)
         normalized["last_used_at"] = normalized.get("last_used_at")
         normalized["created_at"] = normalized.get("created_at") or AccountService._now()
+        normalized["refresh_token"] = (normalized.get("refresh_token") or "") or None
+        normalized["id_token"] = (normalized.get("id_token") or "") or None
+        normalized["account_id"] = (normalized.get("account_id") or "") or None
+        normalized["export_type"] = (normalized.get("export_type") or "") or None
+        source = str(normalized.get("source") or "manual").strip().lower()
+        if source not in {"manual", "cpa", "sub2api", "register"}:
+            source = "manual"
+        normalized["source"] = source
+        normalized["source_account_id"] = (normalized.get("source_account_id") or "") or None
+        normalized["source_pool_id"] = (normalized.get("source_pool_id") or "") or None
+        normalized["source_server_id"] = (normalized.get("source_server_id") or "") or None
         return normalized
 
     def list_tokens(self) -> list[str]:
@@ -218,9 +229,71 @@ class AccountService:
                    and (token := item.get("access_token") or "")
             ]
 
+    _ACCOUNT_PRESERVE_FIELDS = (
+        "access_token",
+        "refresh_token",
+        "id_token",
+        "email",
+        "type",
+        "export_type",
+        "account_id",
+        "source",
+        "source_account_id",
+        "source_pool_id",
+        "source_server_id",
+    )
+
     def add_account_items(self, items: list[dict]) -> dict:
-        tokens = [str(item.get("access_token") or "").strip() for item in items if isinstance(item, dict)]
-        return self.add_accounts(tokens)
+        """保留每条账号的完整字段写入号池。仅 access_token 字符串可走 add_accounts。"""
+        cleaned: list[dict] = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            access_token = str(item.get("access_token") or "").strip()
+            if not access_token:
+                continue
+            entry = {
+                key: item.get(key)
+                for key in self._ACCOUNT_PRESERVE_FIELDS
+                if item.get(key) is not None
+            }
+            entry["access_token"] = access_token
+            # 导入文件用 type=codex 标识来源属于 codex 导出文件，但号池里的 type
+            # 字段表示订阅类型（free/plus/...），所以这里把它改名到 export_type 避免覆盖。
+            if str(entry.get("type") or "").strip().lower() == "codex":
+                entry["export_type"] = "codex"
+                entry.pop("type", None)
+            cleaned.append(entry)
+        if not cleaned:
+            return {"added": 0, "skipped": 0, "items": self.list_accounts()}
+
+        with self._lock:
+            added = 0
+            skipped = 0
+            seen: set[str] = set()
+            for incoming in cleaned:
+                access_token = incoming["access_token"]
+                if access_token in seen:
+                    continue
+                seen.add(access_token)
+                current = self._accounts.get(access_token)
+                if current is None:
+                    added += 1
+                    self._cumulative_total += 1
+                    self._save_cumulative_total()
+                    base = {"created_at": self._now()}
+                else:
+                    skipped += 1
+                    base = dict(current)
+                merged = {**base, **incoming}
+                account = self._normalize_account(merged)
+                if account is not None:
+                    self._accounts[access_token] = account
+            self._save_accounts()
+            items_out = [dict(item) for item in self._accounts.values()]
+            log_service.add(LOG_TYPE_ACCOUNT, f"新增 {added} 个账号，跳过 {skipped} 个",
+                            {"added": added, "skipped": skipped})
+        return {"added": added, "skipped": skipped, "items": items_out}
 
     def add_accounts(self, tokens: list[str]) -> dict:
         tokens = list(dict.fromkeys(token for token in tokens if token))
@@ -341,6 +414,89 @@ class AccountService:
             raise
         return self.update_account(access_token, result)
 
+    def _swap_access_token(self, old_token: str, updates: dict) -> str:
+        """把账号在内存 dict 中的 key 从 old_token 换成 updates['access_token']。
+
+        token 三件套刷新时 access_token 通常会变；refresh_token 也会被服务端轮换。
+        返回新 token；若 access_token 没变则原样返回。
+        """
+        new_token = str(updates.get("access_token") or "").strip()
+        if not new_token:
+            return old_token
+        with self._lock:
+            current = self._accounts.get(old_token)
+            if current is None:
+                return old_token
+            merged = {**current, **updates, "access_token": new_token}
+            account = self._normalize_account(merged)
+            if account is None:
+                return old_token
+            if new_token != old_token:
+                self._accounts.pop(old_token, None)
+                inflight = self._image_inflight.pop(old_token, None)
+                if inflight:
+                    self._image_inflight[new_token] = inflight
+            self._accounts[new_token] = account
+            self._save_accounts()
+            return new_token
+
+    def _refresh_one_by_source(self, access_token: str) -> str:
+        """按 source 走差异化刷新，返回当前生效的 access_token（可能被替换）。
+
+        任何刷新策略失败都会回退到 fetch_remote_info（仅刷额度），保证流程不中断。
+        """
+        with self._lock:
+            account = self._accounts.get(access_token)
+            snapshot = dict(account) if account else None
+        if snapshot is None:
+            return access_token
+
+        source = str(snapshot.get("source") or "manual")
+        try:
+            if source in {"manual", "register"}:
+                refresh_token = str(snapshot.get("refresh_token") or "").strip()
+                if refresh_token:
+                    from services.register.openai_register import refresh_platform_tokens
+                    new_tokens = refresh_platform_tokens(refresh_token)
+                    if new_tokens and new_tokens.get("access_token"):
+                        updates: dict[str, Any] = {"access_token": new_tokens["access_token"]}
+                        if new_tokens.get("refresh_token"):
+                            updates["refresh_token"] = new_tokens["refresh_token"]
+                        if new_tokens.get("id_token"):
+                            updates["id_token"] = new_tokens["id_token"]
+                        access_token = self._swap_access_token(access_token, updates)
+            elif source == "sub2api":
+                server_id = str(snapshot.get("source_server_id") or "").strip()
+                account_id = str(snapshot.get("source_account_id") or "").strip()
+                if server_id and account_id:
+                    from services.sub2api_service import _fetch_access_token_for_account, sub2api_config
+                    server = sub2api_config.get_server(server_id)
+                    if server:
+                        new_token, meta = _fetch_access_token_for_account(server, account_id)
+                        if new_token:
+                            updates = {"access_token": new_token}
+                            if meta.get("refresh_token"):
+                                updates["refresh_token"] = meta["refresh_token"]
+                            if meta.get("id_token"):
+                                updates["id_token"] = meta["id_token"]
+                            if meta.get("email"):
+                                updates["email"] = meta["email"]
+                            access_token = self._swap_access_token(access_token, updates)
+            elif source == "cpa":
+                pool_id = str(snapshot.get("source_pool_id") or "").strip()
+                email = str(snapshot.get("email") or "").strip()
+                if pool_id and email:
+                    from services.cpa_service import cpa_config, fetch_remote_access_token
+                    pool = cpa_config.get_pool(pool_id)
+                    if pool:
+                        new_token, _err = fetch_remote_access_token(pool, email)
+                        if new_token:
+                            access_token = self._swap_access_token(access_token, {"access_token": new_token})
+        except Exception as exc:
+            print(f"[refresh_accounts] source={source} swap failed: {exc}")
+
+        return access_token
+
     def refresh_accounts(self, access_tokens: list[str]) -> dict[str, Any]:
         access_tokens = list(dict.fromkeys(token for token in access_tokens if token))
         if not access_tokens:
@@ -350,9 +506,13 @@ class AccountService:
         errors = []
         max_workers = min(10, len(access_tokens))
 
+        def _refresh_one(token: str) -> dict[str, Any] | None:
+            current_token = self._refresh_one_by_source(token)
+            return self.fetch_remote_info(current_token, "refresh_accounts")
+
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = {
-                executor.submit(self.fetch_remote_info, token, "refresh_accounts"): token
+                executor.submit(_refresh_one, token): token
                 for token in access_tokens
             }
             for future in as_completed(futures):

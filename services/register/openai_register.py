@@ -443,6 +443,42 @@ def exchange_platform_tokens(session: requests.Session, device_id: str, code_ver
     }
 
 
+def refresh_platform_tokens(refresh_token: str) -> dict | None:
+    """用 refresh_token 走 OAuth 端点换一组新的 access/refresh/id token。
+
+    refresh 端点会轮换 refresh_token，调用方需要把响应里的新值写回。
+    某些情况下 id_token 不会重新返回，这种时候由调用方决定是否保留旧值。
+    """
+    candidate = str(refresh_token or "").strip()
+    if not candidate:
+        return None
+    try:
+        resp = create_session(config["proxy"]).post(
+            f"{auth_base}/oauth/token",
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            data={
+                "grant_type": "refresh_token",
+                "client_id": platform_oauth_client_id,
+                "refresh_token": candidate,
+                "scope": "openid profile email offline_access",
+            },
+            verify=False,
+            timeout=60,
+        )
+    except Exception as exc:
+        print(f"[refresh_platform_tokens] request failed: {exc}")
+        return None
+    data = _response_json(resp)
+    if resp.status_code != 200 or not data.get("access_token"):
+        return None
+    return {
+        "access_token": str(data.get("access_token") or "").strip(),
+        "refresh_token": str(data.get("refresh_token") or "").strip(),
+        "id_token": str(data.get("id_token") or "").strip(),
+        "expires_in": int(data.get("expires_in") or 0),
+    }
+
+
 class PlatformRegistrar:
     def __init__(self, proxy: str = "") -> None:
         self.session = create_session(proxy)
@@ -723,7 +759,7 @@ def worker(index: int) -> dict:
         result = registrar.register(index)
         cost = time.time() - start
         access_token = str(result["access_token"])
-        account_service.add_account_items([result])
+        account_service.add_account_items([{**result, "source": "register"}])
         account_service.refresh_accounts([access_token])
         with stats_lock:
             stats["done"] += 1

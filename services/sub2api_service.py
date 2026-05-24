@@ -415,6 +415,8 @@ def _fetch_access_token_for_account(server: dict, account_id: str) -> tuple[str,
     return access_token, {
         "email": _clean(credentials.get("email")),
         "plan_type": _clean(credentials.get("plan_type")),
+        "refresh_token": _clean(credentials.get("refresh_token")),
+        "id_token": _clean(credentials.get("id_token")),
     }
 
 
@@ -472,6 +474,7 @@ class Sub2APIImportService:
     def _run_import(self, server_id: str, server: dict, account_ids: list[str]) -> None:
         self._update_job(server_id, status="running")
 
+        items: list[dict] = []
         tokens: list[str] = []
         max_workers = min(8, max(1, len(account_ids)))
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -482,7 +485,16 @@ class Sub2APIImportService:
             for future in as_completed(future_map):
                 account_id = future_map[future]
                 try:
-                    token, _meta = future.result()
+                    token, meta = future.result()
+                    items.append({
+                        "access_token": token,
+                        "refresh_token": meta.get("refresh_token") or None,
+                        "id_token": meta.get("id_token") or None,
+                        "email": meta.get("email") or None,
+                        "source": "sub2api",
+                        "source_account_id": account_id,
+                        "source_server_id": server_id,
+                    })
                     tokens.append(token)
                 except Exception as exc:
                     self._append_error(server_id, account_id, str(exc) or "unknown error")
@@ -505,7 +517,7 @@ class Sub2APIImportService:
             )
             return
 
-        add_result = account_service.add_accounts(tokens)
+        add_result = account_service.add_account_items(items)
         refresh_result = account_service.refresh_accounts(tokens)
         current = self._config.get_import_job(server_id) or {}
         self._update_job(

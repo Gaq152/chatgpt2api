@@ -267,6 +267,7 @@ class CPAImportService:
     def _run_import(self, pool_id: str, pool: dict, names: list[str]) -> None:
         self._update_job(pool_id, status="running")
 
+        items: list[dict] = []
         tokens: list[str] = []
         max_workers = min(16, max(1, len(names)))
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -280,6 +281,11 @@ class CPAImportService:
 
                 if token:
                     tokens.append(token)
+                    items.append({
+                        "access_token": token,
+                        "source": "cpa",
+                        "source_pool_id": pool_id,
+                    })
                 else:
                     self._append_error(pool_id, file_name, error or "unknown error")
 
@@ -297,7 +303,7 @@ class CPAImportService:
             )
             return
 
-        add_result = account_service.add_accounts(tokens)
+        add_result = account_service.add_account_items(items)
         refresh_result = account_service.refresh_accounts(tokens)
         current = self._config.get_import_job(pool_id) or {}
         self._update_job(
