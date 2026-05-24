@@ -182,31 +182,48 @@ def list_remote_files(pool: dict) -> list[dict]:
 
 
 def fetch_remote_access_token(pool: dict, file_name: str) -> tuple[str | None, str | None]:
+    """旧接口，仅返回 access_token，保留是为了兼容 _refresh_one_by_source 现有调用方。"""
+    token, _meta, error = fetch_remote_account(pool, file_name)
+    return token, error
+
+
+def fetch_remote_account(pool: dict, file_name: str) -> tuple[str | None, dict, str | None]:
+    """从 CPA 拉单条 auth-file，返回 (access_token, meta, error)。
+
+    meta 里包含 refresh_token / id_token / email / account_id / type 等源端给到的字段。
+    """
     base_url = str(pool.get("base_url") or "").strip()
     secret_key = str(pool.get("secret_key") or "").strip()
     file_name = str(file_name or "").strip()
     if not base_url or not secret_key or not file_name:
-        return None, "invalid request"
+        return None, {}, "invalid request"
 
     url = f"{base_url.rstrip('/')}/v0/management/auth-files/download"
     session = Session(**proxy_settings.build_session_kwargs(verify=True))
     try:
         response = session.get(url, headers=_management_headers(secret_key), params={"name": file_name}, timeout=30)
         if not response.ok:
-            return None, f"HTTP {response.status_code}"
+            return None, {}, f"HTTP {response.status_code}"
         payload = response.json()
     except Exception as exc:
-        return None, str(exc)
+        return None, {}, str(exc)
     finally:
         session.close()
 
     if not isinstance(payload, dict):
-        return None, "invalid payload"
+        return None, {}, "invalid payload"
 
     access_token = str(payload.get("access_token") or "").strip()
     if not access_token:
-        return None, "missing access_token"
-    return access_token, None
+        return None, {}, "missing access_token"
+    meta = {
+        "refresh_token": str(payload.get("refresh_token") or "").strip() or None,
+        "id_token": str(payload.get("id_token") or "").strip() or None,
+        "email": str(payload.get("email") or "").strip() or None,
+        "account_id": str(payload.get("account_id") or "").strip() or None,
+        "type": str(payload.get("type") or "").strip() or None,
+    }
+    return access_token, meta, None
 
 
 class CPAImportService:
@@ -271,21 +288,27 @@ class CPAImportService:
         tokens: list[str] = []
         max_workers = min(16, max(1, len(names)))
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            future_map = {executor.submit(fetch_remote_access_token, pool, name): name for name in names}
+            future_map = {executor.submit(fetch_remote_account, pool, name): name for name in names}
             for future in as_completed(future_map):
                 file_name = future_map[future]
                 try:
-                    token, error = future.result()
+                    token, meta, error = future.result()
                 except Exception as exc:
-                    token, error = None, str(exc)
+                    token, meta, error = None, {}, str(exc)
 
                 if token:
                     tokens.append(token)
-                    items.append({
+                    item: dict[str, object] = {
                         "access_token": token,
                         "source": "cpa",
                         "source_pool_id": pool_id,
-                    })
+                        "source_pool_file": file_name,
+                    }
+                    for key in ("refresh_token", "id_token", "email", "account_id", "type"):
+                        value = meta.get(key)
+                        if value:
+                            item[key] = value
+                    items.append(item)
                 else:
                     self._append_error(pool_id, file_name, error or "unknown error")
 

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import base64
+import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Condition, Lock
 from typing import Any
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from services.config import config
@@ -95,6 +97,7 @@ class AccountService:
         normalized["created_at"] = normalized.get("created_at") or AccountService._now()
         normalized["refresh_token"] = (normalized.get("refresh_token") or "") or None
         normalized["id_token"] = (normalized.get("id_token") or "") or None
+        normalized["password"] = (normalized.get("password") or "") or None
         normalized["account_id"] = (normalized.get("account_id") or "") or None
         normalized["export_type"] = (normalized.get("export_type") or "") or None
         source = str(normalized.get("source") or "manual").strip().lower()
@@ -103,6 +106,7 @@ class AccountService:
         normalized["source"] = source
         normalized["source_account_id"] = (normalized.get("source_account_id") or "") or None
         normalized["source_pool_id"] = (normalized.get("source_pool_id") or "") or None
+        normalized["source_pool_file"] = (normalized.get("source_pool_file") or "") or None
         normalized["source_server_id"] = (normalized.get("source_server_id") or "") or None
         return normalized
 
@@ -217,8 +221,85 @@ class AccountService:
             return dict(account) if account else None
 
     def list_accounts(self) -> list[dict]:
+        """对外列表，剥掉 password 等只持久化、不该回显前端的敏感字段。"""
         with self._lock:
-            return [dict(item) for item in self._accounts.values()]
+            return [
+                {key: value for key, value in item.items() if key != "password"}
+                for item in self._accounts.values()
+            ]
+
+    @staticmethod
+    def _decode_jwt_payload(token: str) -> dict:
+        try:
+            parts = str(token or "").split(".")
+            if len(parts) < 2:
+                return {}
+            payload = parts[1]
+            padding = 4 - len(payload) % 4
+            if padding != 4:
+                payload += "=" * padding
+            return json.loads(base64.urlsafe_b64decode(payload))
+        except Exception:
+            return {}
+
+    @staticmethod
+    def _format_iso_cn(timestamp: object) -> str:
+        try:
+            seconds = int(timestamp)
+        except (TypeError, ValueError):
+            return ""
+        try:
+            return datetime.fromtimestamp(seconds, tz=timezone(timedelta(hours=8))).isoformat()
+        except (OSError, OverflowError, ValueError):
+            return ""
+
+    def build_export_items(self, access_tokens: list[str] | None = None) -> list[dict]:
+        """codex 风格导出。仅返回三件套齐全的账号；password 若已存就一并带上。"""
+        with self._lock:
+            if access_tokens:
+                requested = {token for token in access_tokens if token}
+                source_items = [self._accounts[token] for token in requested if token in self._accounts]
+            else:
+                source_items = list(self._accounts.values())
+
+        items: list[dict] = []
+        for account in source_items:
+            access_token = str(account.get("access_token") or "").strip()
+            refresh_token = str(account.get("refresh_token") or "").strip()
+            id_token = str(account.get("id_token") or "").strip()
+            if not access_token or not refresh_token or not id_token:
+                continue
+
+            access_payload = self._decode_jwt_payload(access_token)
+            id_payload = self._decode_jwt_payload(id_token)
+
+            profile = access_payload.get("https://api.openai.com/profile") if isinstance(access_payload.get("https://api.openai.com/profile"), dict) else {}
+            auth_claim = access_payload.get("https://api.openai.com/auth") if isinstance(access_payload.get("https://api.openai.com/auth"), dict) else {}
+
+            email = (
+                str(profile.get("email") or "").strip()
+                or str(id_payload.get("email") or "").strip()
+                or str(account.get("email") or "").strip()
+            )
+            account_id = str(auth_claim.get("chatgpt_account_id") or account.get("account_id") or "").strip()
+            expired = self._format_iso_cn(access_payload.get("exp"))
+            last_refresh = self._format_iso_cn(access_payload.get("iat"))
+
+            item: dict[str, object] = {
+                "type": "codex",
+                "email": email,
+                "expired": expired,
+                "account_id": account_id,
+                "access_token": access_token,
+                "last_refresh": last_refresh,
+                "id_token": id_token,
+                "refresh_token": refresh_token,
+            }
+            password = str(account.get("password") or "").strip()
+            if password:
+                item["password"] = password
+            items.append(item)
+        return items
 
     def list_limited_tokens(self) -> list[str]:
         with self._lock:
@@ -233,6 +314,7 @@ class AccountService:
         "access_token",
         "refresh_token",
         "id_token",
+        "password",
         "email",
         "type",
         "export_type",
@@ -240,6 +322,7 @@ class AccountService:
         "source",
         "source_account_id",
         "source_pool_id",
+        "source_pool_file",
         "source_server_id",
     )
 
@@ -484,14 +567,22 @@ class AccountService:
                             access_token = self._swap_access_token(access_token, updates)
             elif source == "cpa":
                 pool_id = str(snapshot.get("source_pool_id") or "").strip()
-                email = str(snapshot.get("email") or "").strip()
-                if pool_id and email:
-                    from services.cpa_service import cpa_config, fetch_remote_access_token
+                file_name = (
+                    str(snapshot.get("source_pool_file") or "").strip()
+                    or str(snapshot.get("email") or "").strip()  # 兼容老数据：早期没存 source_pool_file
+                )
+                if pool_id and file_name:
+                    from services.cpa_service import cpa_config, fetch_remote_account
                     pool = cpa_config.get_pool(pool_id)
                     if pool:
-                        new_token, _err = fetch_remote_access_token(pool, email)
+                        new_token, meta, _err = fetch_remote_account(pool, file_name)
                         if new_token:
-                            access_token = self._swap_access_token(access_token, {"access_token": new_token})
+                            updates = {"access_token": new_token}
+                            for key in ("refresh_token", "id_token", "email"):
+                                value = meta.get(key)
+                                if value:
+                                    updates[key] = value
+                            access_token = self._swap_access_token(access_token, updates)
         except Exception as exc:
             print(f"[refresh_accounts] source={source} swap failed: {exc}")
 
