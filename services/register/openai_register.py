@@ -483,6 +483,7 @@ class PlatformRegistrar:
     def __init__(self, proxy: str = "") -> None:
         self.session = create_session(proxy)
         self.device_id = str(uuid.uuid4())
+        self._code_verifier: str = ""
 
     def close(self) -> None:
         self.session.close()
@@ -504,7 +505,8 @@ class PlatformRegistrar:
         step(index, "开始 platform authorize")
         self.session.cookies.set("oai-did", self.device_id, domain=".auth.openai.com")
         self.session.cookies.set("oai-did", self.device_id, domain="auth.openai.com")
-        _, code_challenge = _generate_pkce()
+        code_verifier, code_challenge = _generate_pkce()
+        self._code_verifier = code_verifier
         params = {
             "issuer": auth_base,
             "client_id": platform_oauth_client_id,
@@ -550,7 +552,7 @@ class PlatformRegistrar:
             raise RuntimeError(error or f"send_otp_http_{getattr(resp, 'status_code', 'unknown')}")
         step(index, "发送验证码完成")
 
-    def _validate_otp(self, code: str, index: int) -> None:
+    def _validate_otp(self, code: str, index: int) -> dict:
         step(index, f"开始校验验证码 {code}")
         resp, error = validate_otp(self.session, self.device_id, code)
         if resp is None or resp.status_code != 200:
@@ -561,8 +563,9 @@ class PlatformRegistrar:
                 pass
             raise RuntimeError(error or f"validate_otp_http_{getattr(resp, 'status_code', 'unknown')}_body={body}")
         step(index, "验证码校验完成")
+        return _response_json(resp)
 
-    def _create_account(self, name: str, birthdate: str, index: int) -> None:
+    def _create_account(self, name: str, birthdate: str, index: int) -> dict:
         step(index, "开始创建账号资料")
         headers = self._json_headers(f"{auth_base}/about-you")
         headers["openai-sentinel-token"] = build_sentinel_token(self.session, self.device_id, "oauth_create_account")
@@ -574,6 +577,28 @@ class PlatformRegistrar:
             detail = f", detail={json.dumps(data, ensure_ascii=False)}" if data else ""
             raise RuntimeError(error or f"create_account_http_{getattr(resp, 'status_code', 'unknown')}{detail}")
         step(index, "创建账号资料完成")
+        return _response_json(resp)
+
+    def _try_exchange_with_register_session(self, continue_url: str, index: int) -> dict | None:
+        """优先用注册流程当前 session + _platform_authorize 留下的 code_verifier 换 token。
+
+        注册验证码校验 + create_account 完成后，注册 session 已经具备半登录态，
+        理论上 OAuth/PKCE 的 continue_url 这一步可以直接拿到 code，无需再走密码登录。
+        失败返回 None，让上层走独立登录回退方案。
+        """
+        if not self._code_verifier:
+            return None
+        target_url = (continue_url or "").strip() or f"{auth_base}/sign-in-with-chatgpt/codex/consent"
+        try:
+            tokens = exchange_platform_tokens(self.session, self.device_id, self._code_verifier, target_url)
+        except Exception as exc:
+            step(index, f"注册 session 直接换 token 异常，回退独立登录: {exc}", "yellow")
+            return None
+        if not tokens:
+            step(index, "注册 session 未拿到 OAuth code，回退独立登录")
+            return None
+        step(index, "注册 session 直接换 token 成功")
+        return tokens
 
     def _login_and_exchange_tokens(self, email: str, password: str, mailbox: dict, index: int) -> dict:
         step(index, "开始独立登录换 token")
@@ -738,9 +763,19 @@ class PlatformRegistrar:
         if not code:
             raise RuntimeError("等待注册验证码超时")
         step(index, f"收到注册验证码: {code}")
-        self._validate_otp(code, index)
-        self._create_account(f"{first_name} {last_name}", _random_birthdate(), index)
-        tokens = self._login_and_exchange_tokens(email, password, mailbox, index)
+        otp_payload = self._validate_otp(code, index)
+        create_payload = self._create_account(f"{first_name} {last_name}", _random_birthdate(), index)
+
+        # 优先用注册 session 当前的半登录态 + 最初的 code_verifier 直接换 token，
+        # 避免再走独立的密码登录流程触发 password_verify_http_409 (state machine 冲突)。
+        continue_url = (
+            str(create_payload.get("continue_url") or "").strip()
+            or str(otp_payload.get("continue_url") or "").strip()
+        )
+        tokens = self._try_exchange_with_register_session(continue_url, index)
+        if not tokens:
+            tokens = self._login_and_exchange_tokens(email, password, mailbox, index)
+
         return {
             "email": email,
             "password": password,
@@ -759,7 +794,12 @@ def worker(index: int) -> dict:
         result = registrar.register(index)
         cost = time.time() - start
         access_token = str(result["access_token"])
-        account_service.add_account_items([{**result, "source": "register"}])
+        # 兼容旧版 AccountService：没有 add_account_items 则降级用 add_accounts，
+        # 避免 token 已经换到、却因为部署版本不匹配落不进号池。
+        if hasattr(account_service, "add_account_items"):
+            account_service.add_account_items([{**result, "source": "register"}])
+        else:
+            account_service.add_accounts([access_token])
         account_service.refresh_accounts([access_token])
         with stats_lock:
             stats["done"] += 1
