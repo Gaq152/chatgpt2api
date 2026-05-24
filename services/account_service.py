@@ -73,6 +73,32 @@ class AccountService:
             return True
         return int(account.get("quota") or 0) > 0
 
+    @staticmethod
+    def _account_identity(item: dict) -> tuple[str, str]:
+        """按 email > user_id 优先级返回账号身份标识。
+
+        返回 (kind, value)，kind 为 "email" / "user_id" / ""（无可用标识）。
+        用于导入去重：源端轮换 access_token 后再次导入，仍要识别为同一条账户。
+        """
+        email = str((item or {}).get("email") or "").strip()
+        if email:
+            return ("email", email.lower())
+        user_id = str((item or {}).get("user_id") or "").strip()
+        if user_id:
+            return ("user_id", user_id)
+        return ("", "")
+
+    def _find_existing_token_locked(self, identity: tuple[str, str]) -> str:
+        """在 _accounts 里按身份找已存在条目的 access_token，找不到返回 ""。调用方需已持锁。"""
+        kind, value = identity
+        if not kind or not value:
+            return ""
+        for token, account in self._accounts.items():
+            existing = self._account_identity(account)
+            if existing == identity:
+                return token
+        return ""
+
     def _normalize_account(self, item: dict) -> dict | None:
         if not isinstance(item, dict):
             return None
@@ -85,8 +111,26 @@ class AccountService:
         normalized["status"] = normalized.get("status") or "正常"
         normalized["quota"] = max(0, int(normalized.get("quota") if normalized.get("quota") is not None else 0))
         normalized["image_quota_unknown"] = bool(normalized.get("image_quota_unknown"))
-        normalized["email"] = normalized.get("email") or None
-        normalized["user_id"] = normalized.get("user_id") or None
+
+        # email / user_id 是账号身份标识，导入时优先从 incoming 取，缺失时尝试从 access_token JWT 解。
+        # 让"按 email/user_id 去重"在所有场景（注册 / sub2api / cpa / manual）都能找到稳定标识。
+        email = normalized.get("email") or None
+        user_id = normalized.get("user_id") or None
+        if not email or not user_id:
+            access_payload = AccountService._decode_jwt_payload(access_token)
+            if isinstance(access_payload, dict):
+                if not email:
+                    profile = access_payload.get("https://api.openai.com/profile")
+                    if isinstance(profile, dict):
+                        email = str(profile.get("email") or "").strip() or None
+                if not user_id:
+                    auth_claim = access_payload.get("https://api.openai.com/auth")
+                    if isinstance(auth_claim, dict):
+                        user_id = str(auth_claim.get("user_id") or "").strip() or None
+                    if not user_id:
+                        user_id = str(access_payload.get("sub") or "").strip() or None
+        normalized["email"] = email
+        normalized["user_id"] = user_id
         limits_progress = normalized.get("limits_progress")
         normalized["limits_progress"] = limits_progress if isinstance(limits_progress, list) else []
         normalized["default_model_slug"] = normalized.get("default_model_slug") or None
@@ -353,22 +397,53 @@ class AccountService:
         with self._lock:
             added = 0
             skipped = 0
-            seen: set[str] = set()
+            seen_tokens: set[str] = set()
+            seen_identities: set[tuple[str, str]] = set()
             for incoming in cleaned:
                 access_token = incoming["access_token"]
-                if access_token in seen:
+                if access_token in seen_tokens:
                     continue
-                seen.add(access_token)
-                current = self._accounts.get(access_token)
-                if current is None:
-                    added += 1
-                    self._cumulative_total += 1
-                    self._save_cumulative_total()
-                    base = {"created_at": self._now()}
-                else:
+
+                # 入库前先用 access_token JWT 解出 email / user_id（如果 incoming 没带），
+                # 这样 _account_identity 才有稳定标识。这一步顺手把字段补回 incoming，
+                # 后续合并/写盘也能保留下来。
+                preview = self._normalize_account({**incoming})
+                if preview is None:
+                    continue
+                identity = self._account_identity(preview)
+                if identity[0]:
+                    if identity in seen_identities:
+                        continue
+                    seen_identities.add(identity)
+                    incoming.setdefault("email", preview.get("email"))
+                    incoming.setdefault("user_id", preview.get("user_id"))
+
+                # 优先按身份找已存在条目。源端轮换 access_token 后再次导入，
+                # 仍能识别为同一账号 → 删旧 key、用新 access_token 入库，避免产生重复条目。
+                existing_token = self._find_existing_token_locked(identity) if identity[0] else ""
+                if existing_token and existing_token != access_token:
+                    base = dict(self._accounts[existing_token])
+                    self._accounts.pop(existing_token, None)
+                    inflight = self._image_inflight.pop(existing_token, None)
+                    if inflight:
+                        self._image_inflight[access_token] = inflight
                     skipped += 1
-                    base = dict(current)
-                merged = {**base, **incoming}
+                elif existing_token == access_token:
+                    base = dict(self._accounts[access_token])
+                    skipped += 1
+                else:
+                    current = self._accounts.get(access_token)
+                    if current is None:
+                        added += 1
+                        self._cumulative_total += 1
+                        self._save_cumulative_total()
+                        base = {"created_at": self._now()}
+                    else:
+                        base = dict(current)
+                        skipped += 1
+
+                seen_tokens.add(access_token)
+                merged = {**base, **incoming, "access_token": access_token}
                 account = self._normalize_account(merged)
                 if account is not None:
                     self._accounts[access_token] = account
