@@ -57,6 +57,10 @@ class AccountRefreshRequest(BaseModel):
     access_tokens: list[str] = Field(default_factory=list)
 
 
+class AccountDetailRequest(BaseModel):
+    access_token: str = ""
+
+
 class AccountExportRequest(BaseModel):
     access_tokens: list[str] = Field(default_factory=list)
     format: Literal["json", "zip"] = "json"
@@ -203,6 +207,17 @@ def create_router() -> APIRouter:
     async def get_accounts(authorization: str | None = Header(default=None)):
         require_admin(authorization)
         return {"items": account_service.list_accounts()}
+
+    @router.post("/api/accounts/detail")
+    async def get_account_detail(body: AccountDetailRequest, authorization: str | None = Header(default=None)):
+        require_admin(authorization)
+        access_token = body.access_token.strip()
+        if not access_token:
+            raise HTTPException(status_code=400, detail={"error": "access_token is required"})
+        account = account_service.get_account(access_token)
+        if account is None:
+            raise HTTPException(status_code=404, detail={"error": "账号不存在"})
+        return {"item": account}
 
     @router.post("/api/accounts")
     async def create_accounts(body: AccountCreateRequest, authorization: str | None = Header(default=None)):

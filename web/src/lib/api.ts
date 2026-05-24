@@ -29,6 +29,16 @@ export type Account = {
   success: number;
   fail: number;
   last_used_at?: string | null;
+  created_at?: string | null;
+  source?: "manual" | "register" | "sub2api" | "cpa" | string | null;
+  source_account_id?: string | null;
+  source_pool_id?: string | null;
+  source_pool_file?: string | null;
+  source_server_id?: string | null;
+};
+
+export type AccountDetail = Account & {
+  password?: string | null;
 };
 
 type AccountListResponse = {
@@ -294,6 +304,13 @@ export async function login(authKey: string) {
 
 export async function fetchAccounts() {
   return httpRequest<AccountListResponse>("/api/accounts");
+}
+
+export async function fetchAccountDetail(accessToken: string) {
+  return httpRequest<{ item: AccountDetail }>("/api/accounts/detail", {
+    method: "POST",
+    body: { access_token: accessToken },
+  });
 }
 
 export async function createAccounts(tokens: string[], accounts: AccountImportPayload[] = []) {

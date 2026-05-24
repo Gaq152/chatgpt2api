@@ -9,8 +9,8 @@ import {
   ChevronRight,
   CircleAlert,
   CircleOff,
-  Copy,
   Download,
+  Info,
   LoaderCircle,
   Pencil,
   RefreshCw,
@@ -53,6 +53,7 @@ import {
 import { useAuthGuard } from "@/lib/use-auth-guard";
 import { cn } from "@/lib/utils";
 
+import { AccountDetailDialog } from "./components/account-detail-dialog";
 import { AccountImportDialog } from "./components/account-import-dialog";
 
 const accountStatusOptions: { label: string; value: AccountStatus | "all" }[] = [
@@ -199,6 +200,7 @@ function AccountsPageContent() {
   const [isDeleting, setIsDeleting] = useState(false);
   const [isUpdating, setIsUpdating] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
+  const [detailToken, setDetailToken] = useState<string | null>(null);
 
   const loadAccounts = async (silent = false) => {
     if (!silent) {
@@ -664,7 +666,6 @@ function AccountsPageContent() {
                         onCheckedChange={(checked) => toggleSelectAll(Boolean(checked))}
                       />
                     </th>
-                    <th className="w-56 px-4 py-3">token</th>
                     <th className="w-28 px-4 py-3">类型</th>
                     <th className="w-24 px-4 py-3">状态</th>
                     <th className="w-56 px-4 py-3">账号信息</th>
@@ -672,7 +673,7 @@ function AccountsPageContent() {
                     <th className="w-40 px-4 py-3">恢复时间</th>
                     <th className="w-18 px-4 py-3">成功</th>
                     <th className="w-18 px-4 py-3">失败</th>
-                    <th className="w-24 px-4 py-3">操作</th>
+                    <th className="w-32 px-4 py-3">操作</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -696,26 +697,6 @@ function AccountsPageContent() {
                               );
                             }}
                           />
-                        </td>
-                        <td className="px-4 py-3">
-                          <div className="flex items-center gap-2">
-                            <span
-                              className="max-w-[240px] truncate font-medium tracking-tight text-stone-700 transition duration-150 blur-sm hover:blur-none"
-                              title={account.access_token}
-                            >
-                              {account.access_token}
-                            </span>
-                            <button
-                              type="button"
-                              className="rounded-lg p-1 text-stone-400 transition hover:bg-stone-100 hover:text-stone-700"
-                              onClick={() => {
-                                void navigator.clipboard.writeText(account.access_token);
-                                toast.success("token 已复制");
-                              }}
-                            >
-                              <Copy className="size-4" />
-                            </button>
-                          </div>
                         </td>
                         <td className="px-4 py-3">
                           <Badge variant="secondary" className="rounded-md bg-stone-100 text-stone-700">
@@ -754,6 +735,15 @@ function AccountsPageContent() {
                         <td className="px-4 py-3 text-stone-500">{account.fail}</td>
                         <td className="px-4 py-3">
                           <div className="flex items-center gap-1 text-stone-400">
+                            <button
+                              type="button"
+                              className="rounded-lg p-2 transition hover:bg-stone-100 hover:text-stone-700"
+                              onClick={() => setDetailToken(account.access_token)}
+                              title="查看详情"
+                              aria-label="查看详情"
+                            >
+                              <Info className="size-4" />
+                            </button>
                             <button
                               type="button"
                               className="rounded-lg p-2 transition hover:bg-stone-100 hover:text-stone-700"
@@ -871,6 +861,16 @@ function AccountsPageContent() {
           </CardContent>
         </Card>
       </section>
+
+      <AccountDetailDialog
+        accessToken={detailToken}
+        open={Boolean(detailToken)}
+        onOpenChange={(open) => {
+          if (!open) {
+            setDetailToken(null);
+          }
+        }}
+      />
     </>
   );
 }
