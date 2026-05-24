@@ -329,18 +329,3 @@ curl http://localhost:8000/v1/responses \
 </details>
 </details>
 
-## 社区支持
-
-学 AI , 上 L 站：[LinuxDO](https://linux.do)
-
-## Contributors
-
-感谢所有为本项目做出贡献的开发者：
-
-<a href="https://github.com/basketikun/chatgpt2api/graphs/contributors">
-  <img alt="Contributors" src="https://contrib.rocks/image?repo=basketikun/chatgpt2api" />
-</a>
-
-## Star History
-
-[![Star History Chart](https://api.star-history.com/chart?repos=basketikun/chatgpt2api&type=date&legend=top-left)](https://www.star-history.com/?repos=basketikun%2Fchatgpt2api&type=date&legend=top-left)
