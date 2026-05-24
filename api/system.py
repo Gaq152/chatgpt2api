@@ -8,6 +8,7 @@ from fastapi.responses import HTMLResponse, Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict
 
 from api.support import require_admin, require_identity, resolve_image_base_url
+from services.auth_service import auth_service
 from services.backup_service import BackupError, backup_service
 from services.config import config
 from services.image_service import (
@@ -66,6 +67,26 @@ def create_router(app_version: str) -> APIRouter:
             "role": identity.get("role"),
             "subject_id": identity.get("id"),
             "name": identity.get("name"),
+        }
+
+    @router.get("/api/auth/me/quota")
+    async def get_my_quota(authorization: str | None = Header(default=None)):
+        identity = require_identity(authorization)
+        if str(identity.get("role") or "").strip().lower() != "user":
+            return {"quota": None}
+        snapshot = auth_service.peek_quota(str(identity.get("id") or ""))
+        if snapshot is None:
+            return {"quota": None}
+        quota_24h = snapshot.get("quota_24h")
+        remaining = int(snapshot.get("remaining") or 0)
+        used = max(0, int(quota_24h or 0) - remaining) if isinstance(quota_24h, int) else 0
+        return {
+            "quota": {
+                "quota_24h": quota_24h,
+                "quota_used": used,
+                "remaining": remaining,
+                "reset_at": snapshot.get("reset_at"),
+            }
         }
 
     @router.get("/version")

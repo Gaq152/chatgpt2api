@@ -612,6 +612,17 @@ export async function deleteUserKey(keyId: string) {
   });
 }
 
+export type MyQuotaSnapshot = {
+  quota_24h: number;
+  quota_used: number;
+  remaining: number;
+  reset_at: string | null;
+};
+
+export async function fetchMyQuota() {
+  return httpRequest<{ quota: MyQuotaSnapshot | null }>("/api/auth/me/quota");
+}
+
 export async function fetchRegisterConfig() {
   return httpRequest<{ register: RegisterConfig }>("/api/register");
 }

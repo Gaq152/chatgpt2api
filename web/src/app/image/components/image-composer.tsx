@@ -13,6 +13,8 @@ type ImageComposerProps = {
   imageCount: string;
   imageSize: string;
   availableQuota: string;
+  quotaTooltip?: string;
+  quotaTone?: "default" | "warning";
   activeTaskCount: number;
   referenceImages: Array<{ name: string; dataUrl: string }>;
   textareaRef: RefObject<HTMLTextAreaElement | null>;
@@ -31,6 +33,8 @@ export function ImageComposer({
   imageCount,
   imageSize,
   availableQuota,
+  quotaTooltip,
+  quotaTone = "default",
   activeTaskCount,
   referenceImages,
   textareaRef,
@@ -183,8 +187,17 @@ export function ImageComposer({
                     <ImagePlus className="size-3.5 sm:size-4" />
                     <span className="hidden sm:inline">{referenceImages.length > 0 ? "添加参考图" : "上传"}</span>
                   </Button>
-                  <div className="shrink-0 rounded-full bg-stone-100 px-2 py-1 text-[10px] font-medium text-stone-600 sm:px-3 sm:py-2 sm:text-xs">
-                    <span className="hidden sm:inline">剩余额度 </span>{availableQuota}
+                  <div
+                    className={cn(
+                      "shrink-0 rounded-full px-2 py-1 text-[10px] font-medium sm:px-3 sm:py-2 sm:text-xs",
+                      quotaTone === "warning"
+                        ? "bg-rose-50 text-rose-600"
+                        : "bg-stone-100 text-stone-600",
+                      quotaTooltip ? "cursor-help" : undefined,
+                    )}
+                    title={quotaTooltip}
+                  >
+                    <span className="hidden sm:inline">额度限额 </span>{availableQuota}
                   </div>
                   {activeTaskCount > 0 && (
                     <div className="flex shrink-0 items-center gap-1 rounded-full bg-amber-50 px-2 py-1 text-[10px] font-medium text-amber-700 sm:gap-1.5 sm:px-3 sm:py-2 sm:text-xs">

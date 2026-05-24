@@ -22,6 +22,7 @@ import {
   createImageGenerationTask,
   fetchAccounts,
   fetchImageTasks,
+  fetchMyQuota,
   type Account,
   type ImageTask,
 } from "@/lib/api";
@@ -362,6 +363,8 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
   const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null);
   const [isLoadingHistory, setIsLoadingHistory] = useState(true);
   const [availableQuota, setAvailableQuota] = useState("加载中...");
+  const [quotaTooltip, setQuotaTooltip] = useState<string | undefined>(undefined);
+  const [quotaTone, setQuotaTone] = useState<"default" | "warning">("default");
   const [lightboxImages, setLightboxImages] = useState<ImageLightboxItem[]>([]);
   const [lightboxOpen, setLightboxOpen] = useState(false);
   const [lightboxIndex, setLightboxIndex] = useState(0);
@@ -494,13 +497,31 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
   }, []);
 
   const loadQuota = useCallback(async () => {
-    if (!isAdmin) {
-      setAvailableQuota("--");
+    if (isAdmin) {
+      try {
+        const data = await fetchAccounts();
+        setAvailableQuota(formatAvailableQuota(data.items));
+      } catch {
+        setAvailableQuota((prev) => (prev === "加载中..." ? "--" : prev));
+      }
+      setQuotaTooltip(undefined);
+      setQuotaTone("default");
       return;
     }
     try {
-      const data = await fetchAccounts();
-      setAvailableQuota(formatAvailableQuota(data.items));
+      const data = await fetchMyQuota();
+      const quota = data.quota;
+      if (!quota || typeof quota.quota_24h !== "number") {
+        setAvailableQuota("--");
+        setQuotaTooltip(undefined);
+        setQuotaTone("default");
+        return;
+      }
+      setAvailableQuota(`${quota.remaining} / ${quota.quota_24h}`);
+      setQuotaTone(quota.remaining <= 0 ? "warning" : "default");
+      setQuotaTooltip(
+        quota.reset_at ? `下次刷新：${formatConversationTime(quota.reset_at)}` : "尚未开始计数，下次调用起算 24 小时",
+      );
     } catch {
       setAvailableQuota((prev) => (prev === "加载中..." ? "--" : prev));
     }
@@ -1315,6 +1336,8 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
             imageCount={imageCount}
             imageSize={imageSize}
             availableQuota={availableQuota}
+            quotaTooltip={quotaTooltip}
+            quotaTone={quotaTone}
             activeTaskCount={activeTaskCount}
             referenceImages={referenceImages}
             textareaRef={textareaRef}
