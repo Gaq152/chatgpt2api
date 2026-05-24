@@ -41,6 +41,7 @@ export function UserKeysCard() {
   const [isLoading, setIsLoading] = useState(true);
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [name, setName] = useState("");
+  const [quota24h, setQuota24h] = useState("");
   const [isCreating, setIsCreating] = useState(false);
   const [pendingIds, setPendingIds] = useState<Set<string>>(() => new Set());
   const [revealedKey, setRevealedKey] = useState("");
@@ -48,6 +49,7 @@ export function UserKeysCard() {
   const [editingItem, setEditingItem] = useState<UserKey | null>(null);
   const [editName, setEditName] = useState("");
   const [editKey, setEditKey] = useState("");
+  const [editQuota, setEditQuota] = useState("");
 
   const load = async () => {
     setIsLoading(true);
@@ -70,12 +72,18 @@ export function UserKeysCard() {
   }, []);
 
   const handleCreate = async () => {
+    const quotaValue = Number.parseInt(quota24h, 10);
+    if (!Number.isFinite(quotaValue) || quotaValue <= 0) {
+      toast.error("请填写一个大于 0 的 24 小时调用上限");
+      return;
+    }
     setIsCreating(true);
     try {
-      const data = await createUserKey(name.trim());
+      const data = await createUserKey(name.trim(), quotaValue);
       setItems(data.items);
       setRevealedKey(data.key);
       setName("");
+      setQuota24h("");
       setIsDialogOpen(false);
       toast.success("用户密钥已创建");
     } catch (error) {
@@ -132,6 +140,7 @@ export function UserKeysCard() {
     setEditingItem(item);
     setEditName(item.name);
     setEditKey("");
+    setEditQuota(item.quota_24h != null ? String(item.quota_24h) : "");
   };
 
   const handleEdit = async () => {
@@ -141,7 +150,19 @@ export function UserKeysCard() {
     const item = editingItem;
     const trimmedName = editName.trim();
     const trimmedKey = editKey.trim();
-    if (trimmedName === item.name && !trimmedKey) {
+    const trimmedQuota = editQuota.trim();
+    let nextQuota: number | undefined;
+    if (trimmedQuota) {
+      const parsed = Number.parseInt(trimmedQuota, 10);
+      if (!Number.isFinite(parsed) || parsed <= 0) {
+        toast.error("调用上限必须是正整数");
+        return;
+      }
+      if (parsed !== item.quota_24h) {
+        nextQuota = parsed;
+      }
+    }
+    if (trimmedName === item.name && !trimmedKey && nextQuota === undefined) {
       setEditingItem(null);
       return;
     }
@@ -150,11 +171,13 @@ export function UserKeysCard() {
       const data = await updateUserKey(item.id, {
         ...(trimmedName !== item.name ? { name: trimmedName } : {}),
         ...(trimmedKey ? { key: trimmedKey } : {}),
+        ...(nextQuota !== undefined ? { quota_24h: nextQuota } : {}),
       });
       setItems(data.items);
       setEditingItem(null);
       setEditKey("");
-      toast.success(trimmedKey ? "用户密钥已更新" : "用户名称已更新");
+      setEditQuota("");
+      toast.success("用户密钥已更新");
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "更新用户密钥失败");
     } finally {
@@ -233,6 +256,11 @@ export function UserKeysCard() {
                       <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-stone-500">
                         <span>创建时间 {formatDateTime(item.created_at)}</span>
                         <span>最近使用 {formatDateTime(item.last_used_at)}</span>
+                        <span>
+                          24h 用量 {(item.quota_used ?? 0)}
+                          {item.quota_24h != null ? ` / ${item.quota_24h}` : " / 未配置"}
+                        </span>
+                        <span>下次刷新 {formatDateTime(item.quota_reset_at)}</span>
                       </div>
                     </div>
 
@@ -290,14 +318,31 @@ export function UserKeysCard() {
               可选填写一个备注名称，方便区分不同使用者；创建后会生成一条只能查看一次的原始密钥。
             </DialogDescription>
           </DialogHeader>
-          <div className="space-y-2">
-            <label className="text-sm font-medium text-stone-700">名称（可选）</label>
-            <Input
-              value={name}
-              onChange={(event) => setName(event.target.value)}
-              placeholder="例如：设计同学 A、运营临时账号"
-              className="h-11 rounded-xl border-stone-200 bg-white"
-            />
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-stone-700">名称（可选）</label>
+              <Input
+                value={name}
+                onChange={(event) => setName(event.target.value)}
+                placeholder="例如：设计同学 A、运营临时账号"
+                className="h-11 rounded-xl border-stone-200 bg-white"
+              />
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-stone-700">24 小时调用上限（必填）</label>
+              <Input
+                type="number"
+                min={1}
+                step={1}
+                value={quota24h}
+                onChange={(event) => setQuota24h(event.target.value)}
+                placeholder="例如：50"
+                className="h-11 rounded-xl border-stone-200 bg-white"
+              />
+              <p className="text-xs leading-5 text-stone-500">
+                用户首次调用起算 24 小时，超额返回 429。期间未使用满 24 小时后下次调用会重新起算（不顺延）。
+              </p>
+            </div>
           </div>
           <DialogFooter>
             <Button
@@ -359,6 +404,7 @@ export function UserKeysCard() {
           if (!open) {
             setEditingItem(null);
             setEditKey("");
+            setEditQuota("");
           }
         }}
       >
@@ -366,7 +412,7 @@ export function UserKeysCard() {
           <DialogHeader className="gap-2">
             <DialogTitle>编辑用户密钥</DialogTitle>
             <DialogDescription className="text-sm leading-6">
-              可以修改备注名称；如需更换专用密钥，直接填写新的原始密钥即可。留空则保持当前密钥不变。
+              可以修改备注名称、调用上限；如需更换专用密钥，直接填写新的原始密钥即可。留空则保持当前密钥不变。
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
@@ -378,6 +424,21 @@ export function UserKeysCard() {
                 placeholder="例如：设计同学 A、运营临时账号"
                 className="h-11 rounded-xl border-stone-200 bg-white"
               />
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-stone-700">24 小时调用上限</label>
+              <Input
+                type="number"
+                min={1}
+                step={1}
+                value={editQuota}
+                onChange={(event) => setEditQuota(event.target.value)}
+                placeholder="例如：50"
+                className="h-11 rounded-xl border-stone-200 bg-white"
+              />
+              <p className="text-xs leading-5 text-stone-500">
+                修改后立即生效，但当前 24h 窗口的已用计数不会清零。
+              </p>
             </div>
             <div className="space-y-2">
               <label className="text-sm font-medium text-stone-700">新的专用密钥（可选）</label>
@@ -400,6 +461,7 @@ export function UserKeysCard() {
               onClick={() => {
                 setEditingItem(null);
                 setEditKey("");
+                setEditQuota("");
               }}
               disabled={editingItem ? pendingIds.has(editingItem.id) : false}
             >

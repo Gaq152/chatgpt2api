@@ -35,6 +35,34 @@ def require_identity(authorization: str | None) -> dict[str, object]:
     return identity
 
 
+def enforce_user_quota(identity: dict[str, object]) -> None:
+    """user 角色在调用 LLM 接口前检查 24h 滚动窗口配额。admin 直接放行。"""
+    if str(identity.get("role") or "").strip().lower() != "user":
+        return
+    key_id = str(identity.get("id") or "").strip()
+    if not key_id:
+        return
+    snapshot = auth_service.peek_quota(key_id)
+    if snapshot is None:
+        return
+    if int(snapshot.get("remaining") or 0) <= 0:
+        reset_at = snapshot.get("reset_at")
+        message = "已超出 24 小时调用上限"
+        if reset_at:
+            message = f"{message}，下次刷新时间：{reset_at}"
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "error": {
+                    "type": "rate_limit_error",
+                    "message": message,
+                    "reset_at": reset_at,
+                    "quota_24h": snapshot.get("quota_24h"),
+                }
+            },
+        )
+
+
 def require_auth_key(authorization: str | None) -> None:
     require_identity(authorization)
 

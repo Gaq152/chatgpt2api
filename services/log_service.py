@@ -180,6 +180,23 @@ class LoggedCall:
     started: float = field(default_factory=time.time)
     request_text: str = ""
 
+    def _consume_user_quota(self) -> None:
+        """成功 / 用户自身原因失败时扣减用户密钥的 24h 配额。
+
+        admin 角色或未配额的 user 走 no-op；超额前置 peek_quota 已拦下，所以这里
+        见到的扣减都视为允许。失败也吞掉，绝不影响主流程。
+        """
+        if str(self.identity.get("role") or "").strip().lower() != "user":
+            return
+        key_id = str(self.identity.get("id") or "").strip()
+        if not key_id:
+            return
+        try:
+            from services.auth_service import auth_service
+            auth_service.consume_quota(key_id)
+        except Exception:
+            pass
+
     async def run(self, handler, *args, sse: str = "openai"):
         from services.protocol.conversation import ImageGenerationError
 
@@ -190,6 +207,7 @@ class LoggedCall:
             return _image_error_response(exc)
         except HTTPException as exc:
             self.log("调用失败", status="failed", error=str(exc.detail))
+            self._consume_user_quota()
             raise
         except Exception as exc:
             self.log("调用失败", status="failed", error=str(exc))
@@ -197,6 +215,7 @@ class LoggedCall:
 
         if isinstance(result, dict):
             self.log("调用完成", result)
+            self._consume_user_quota()
             return result
 
         sender = anthropic_sse_stream if sse == "anthropic" else sse_json_stream
@@ -207,12 +226,14 @@ class LoggedCall:
             return _image_error_response(exc)
         except HTTPException as exc:
             self.log("调用失败", status="failed", error=str(exc.detail))
+            self._consume_user_quota()
             raise
         except Exception as exc:
             self.log("调用失败", status="failed", error=str(exc))
             return _protocol_error_response(exc, 502, sse)
         if not has_first:
             self.log("流式调用结束")
+            self._consume_user_quota()
             return StreamingResponse(sender(()), media_type="text/event-stream")
         return StreamingResponse(sender(self.stream(itertools.chain([first], result))), media_type="text/event-stream")
 
@@ -230,6 +251,7 @@ class LoggedCall:
         finally:
             if not failed:
                 self.log("流式调用结束", urls=urls)
+                self._consume_user_quota()
 
     def log(self, suffix: str, result: object = None, status: str = "success", error: str = "",
             urls: list[str] | None = None) -> None:
