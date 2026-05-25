@@ -354,6 +354,22 @@ class AccountService:
                    and (token := item.get("access_token") or "")
             ]
 
+    def list_refreshable_tokens(self) -> list[str]:
+        """watcher 定时刷新的候选：除禁用外的全部账号。
+
+        异常 / 限流 / 正常都会被刷一次，因为按 source 分流后：
+        - manual/register 走 OAuth refresh_token 刷三件套
+        - sub2api/cpa 走平台重拉
+        - 这些动作本身就能恢复异常号、回查限流号、续期正常号
+        """
+        with self._lock:
+            return [
+                token
+                for item in self._accounts.values()
+                if item.get("status") != "禁用"
+                   and (token := item.get("access_token") or "")
+            ]
+
     _ACCOUNT_PRESERVE_FIELDS = (
         "access_token",
         "refresh_token",

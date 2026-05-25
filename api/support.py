@@ -113,15 +113,15 @@ def start_limited_account_watcher(stop_event: Event) -> Thread:
     def worker() -> None:
         while not stop_event.is_set():
             try:
-                limited_tokens = account_service.list_limited_tokens()
-                if limited_tokens:
-                    print(f"[account-limited-watcher] checking {len(limited_tokens)} limited accounts")
-                    account_service.refresh_accounts(limited_tokens)
+                tokens = account_service.list_refreshable_tokens()
+                if tokens:
+                    print(f"[account-watcher] refreshing {len(tokens)} accounts")
+                    account_service.refresh_accounts(tokens)
             except Exception as exc:
-                print(f"[account-limited-watcher] fail {exc}")
+                print(f"[account-watcher] fail {exc}")
             stop_event.wait(interval_seconds)
 
-    thread = Thread(target=worker, name="limited-account-watcher", daemon=True)
+    thread = Thread(target=worker, name="account-watcher", daemon=True)
     thread.start()
     return thread
 

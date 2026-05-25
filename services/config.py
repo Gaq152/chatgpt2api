@@ -165,9 +165,10 @@ def _load_settings() -> LoadedSettings:
         )
 
     try:
-        refresh_interval = int(raw_config.get("refresh_account_interval_minute", 5))
+        refresh_interval = int(raw_config.get("refresh_account_interval_minute", 30))
     except (TypeError, ValueError):
-        refresh_interval = 5
+        refresh_interval = 30
+    refresh_interval = max(30, refresh_interval)
 
     return LoadedSettings(
         auth_key=auth_key,
@@ -207,10 +208,12 @@ class ConfigStore:
 
     @property
     def refresh_account_interval_minute(self) -> int:
+        # watcher 现在按这个间隔刷所有非禁用账号；间隔太短会持续打外部接口，下限 30 分钟。
         try:
-            return int(self.data.get("refresh_account_interval_minute", 5))
+            value = int(self.data.get("refresh_account_interval_minute", 30))
         except (TypeError, ValueError):
-            return 5
+            value = 30
+        return max(30, value)
 
     @property
     def image_retention_days(self) -> int:
