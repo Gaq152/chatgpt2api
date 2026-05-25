@@ -459,9 +459,16 @@ def _decode_jwt_payload(token: str) -> dict:
 
 
 def _resolve_oauth_client_id(access_token: str) -> str:
-    """按 access_token JWT 里的 azp 选刷新用的 client_id，解不出兜底 platform。"""
-    azp = str(_decode_jwt_payload(access_token).get("azp") or "").strip()
-    if azp == codex_oauth_client_id:
+    """按 access_token JWT 选刷新用的 client_id，解不出兜底 platform。
+
+    OpenAI 不同来源 token 里携带的字段不一样：
+    - codex CLI 颁发的 token 用 OIDC 标准的 azp = app_EMoamEEZ73f0CkXaXp7hrann
+    - platform 注册机颁发的没有 azp，而是用 client_id = app_2SKx67EdpoN0G6j64rFvigXD
+    两个都看，都不命中走 platform 兜底（自家注册机就走这个）。
+    """
+    payload = _decode_jwt_payload(access_token)
+    candidate = str(payload.get("azp") or payload.get("client_id") or "").strip()
+    if candidate == codex_oauth_client_id:
         return codex_oauth_client_id
     return platform_oauth_client_id
 
