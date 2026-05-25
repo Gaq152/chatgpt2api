@@ -139,6 +139,8 @@ class AccountService:
         normalized["fail"] = int(normalized.get("fail") or 0)
         normalized["last_used_at"] = normalized.get("last_used_at")
         normalized["created_at"] = normalized.get("created_at") or AccountService._now()
+        normalized["invalid_count"] = int(normalized.get("invalid_count") or 0)
+        normalized["last_invalid_at"] = normalized.get("last_invalid_at") or None
         normalized["refresh_token"] = (normalized.get("refresh_token") or "") or None
         normalized["id_token"] = (normalized.get("id_token") or "") or None
         normalized["password"] = (normalized.get("password") or "") or None
@@ -239,13 +241,99 @@ class AccountService:
                 return
             next_item = dict(current)
             next_item["last_used_at"] = self._now()
+            # 调用成功 → 清 401 计数，下次再撞 401 重新走缓判窗口
+            next_item["invalid_count"] = 0
+            next_item["last_invalid_at"] = None
             account = self._normalize_account(next_item)
             if account is None:
                 return
             self._accounts[access_token] = account
             self._save_accounts()
 
+    # 401 误判保护参数：新号缓冲 + 重复确认窗口
+    _NEW_ACCOUNT_INVALID_GRACE_SECONDS = 10 * 60  # 新号 10 分钟内首次 401 不删
+    _INVALID_CONFIRM_SECONDS = 30                 # 30 秒内重复 401 视为同一次抖动
+
+    @staticmethod
+    def _parse_invalid_time(value: object) -> datetime | None:
+        raw = str(value or "").strip()
+        if not raw:
+            return None
+        try:
+            parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except Exception:
+            try:
+                parsed = datetime.strptime(raw, "%Y-%m-%d %H:%M:%S")
+            except Exception:
+                return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+
+    def _should_defer_invalid(self, account: dict, now: datetime) -> bool:
+        """新号宽限 / 第一次 401 / 30 秒内重复 401 都缓判，连续两次确认才允许真删。"""
+        created_at = self._parse_invalid_time(account.get("created_at"))
+        if created_at and (now - created_at).total_seconds() < self._NEW_ACCOUNT_INVALID_GRACE_SECONDS:
+            return True
+        invalid_count = int(account.get("invalid_count") or 0)
+        if invalid_count <= 1:
+            return True
+        last_invalid_at = self._parse_invalid_time(account.get("last_invalid_at"))
+        if last_invalid_at and (now - last_invalid_at).total_seconds() < self._INVALID_CONFIRM_SECONDS:
+            return True
+        return False
+
+    def _record_invalid_seen(self, access_token: str, event: str) -> bool:
+        """记一次 401，返回是否允许真删。
+
+        返回 True：累计次数和时间窗满足真删条件，调用方继续走 remove。
+        返回 False：缓判，写入计数和时间但不删；下次还撞 401 才会被允许真删。
+        """
+        now = datetime.now(timezone.utc)
+        with self._lock:
+            current = self._accounts.get(access_token)
+            if current is None:
+                return True  # 已经不在号池，调用方按删处理无副作用
+            should_defer = self._should_defer_invalid(current, now)
+            next_item = dict(current)
+            next_item["invalid_count"] = int(next_item.get("invalid_count") or 0) + 1
+            next_item["last_invalid_at"] = now.isoformat()
+            account = self._normalize_account(next_item)
+            if account is not None:
+                self._accounts[access_token] = account
+                self._save_accounts()
+        if should_defer:
+            log_service.add(
+                LOG_TYPE_ACCOUNT,
+                "暂缓标记异常账号",
+                {"source": event, "token": anonymize_token(access_token),
+                 "invalid_count": int((account or current).get("invalid_count") or 0)},
+            )
+        return not should_defer
+
+    def _clear_invalid_count(self, access_token: str) -> None:
+        """token 调用 / 刷新成功后清零计数，下次再撞 401 重新走缓判窗口。"""
+        if not access_token:
+            return
+        with self._lock:
+            current = self._accounts.get(access_token)
+            if current is None:
+                return
+            if not int(current.get("invalid_count") or 0) and not current.get("last_invalid_at"):
+                return
+            next_item = dict(current)
+            next_item["invalid_count"] = 0
+            next_item["last_invalid_at"] = None
+            account = self._normalize_account(next_item)
+            if account is not None:
+                self._accounts[access_token] = account
+                self._save_accounts()
+
     def remove_invalid_token(self, access_token: str, event: str) -> bool:
+        # 缓判：新号 10 分钟内 / 第一次 401 / 30 秒内重复 401 都先记账不真删，
+        # 连续两次确认（且超出抖动窗口）才放过来走原删除流程。
+        if access_token and not self._record_invalid_seen(access_token, event):
+            return False
         if not config.auto_remove_invalid_accounts:
             self.update_account(access_token, {"status": "异常", "quota": 0})
             return False
@@ -561,6 +649,9 @@ class AccountService:
                     next_item["restore_at"] = next_item.get("restore_at") or None
                 elif next_item.get("status") == "限流":
                     next_item["status"] = "正常"
+                # 调用成功 → 清 401 计数
+                next_item["invalid_count"] = 0
+                next_item["last_invalid_at"] = None
             else:
                 next_item["fail"] = int(next_item.get("fail") or 0) + 1
             account = self._normalize_account(next_item)
@@ -586,6 +677,8 @@ class AccountService:
         except InvalidAccessTokenError:
             self.remove_invalid_token(access_token, event)
             raise
+        # 远端拿到信息说明 token 仍然有效，清掉之前累计的 401 计数
+        self._clear_invalid_count(access_token)
         return self.update_account(access_token, result)
 
     def _swap_access_token(self, old_token: str, updates: dict) -> str:
@@ -601,7 +694,9 @@ class AccountService:
             current = self._accounts.get(old_token)
             if current is None:
                 return old_token
-            merged = {**current, **updates, "access_token": new_token}
+            # 刷新成功 → 清 401 计数，新 token 视为干净起点
+            merged = {**current, **updates, "access_token": new_token,
+                      "invalid_count": 0, "last_invalid_at": None}
             account = self._normalize_account(merged)
             if account is None:
                 return old_token
@@ -631,7 +726,7 @@ class AccountService:
                 refresh_token = str(snapshot.get("refresh_token") or "").strip()
                 if refresh_token:
                     from services.register.openai_register import refresh_platform_tokens
-                    new_tokens = refresh_platform_tokens(refresh_token)
+                    new_tokens = refresh_platform_tokens(refresh_token, access_token)
                     if new_tokens and new_tokens.get("access_token"):
                         updates: dict[str, Any] = {"access_token": new_tokens["access_token"]}
                         if new_tokens.get("refresh_token"):
@@ -678,6 +773,15 @@ class AccountService:
             print(f"[refresh_accounts] source={source} swap failed: {exc}")
 
         return access_token
+
+    def try_refresh_access_token(self, access_token: str) -> str:
+        """对外公开的 token 刷新入口，按 source 分流，返回当前生效的 access_token。
+
+        刷不出来或刷不动时返回原 token。流式 401 兜底场景调用，避免直接暴露 _refresh_one_by_source。
+        """
+        if not access_token:
+            return access_token
+        return self._refresh_one_by_source(access_token)
 
     def refresh_accounts(self, access_tokens: list[str]) -> dict[str, Any]:
         access_tokens = list(dict.fromkeys(token for token in access_tokens if token))

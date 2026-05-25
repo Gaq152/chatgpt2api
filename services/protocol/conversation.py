@@ -521,6 +521,12 @@ def stream_text_deltas(backend: OpenAIBackendAPI, request: ConversationRequest) 
         except Exception as exc:
             error_message = str(exc)
             if token and not emitted and is_token_invalid_error(error_message):
+                # 401 时先按 source 走一次刷新；access_token 真换了就用新 token 同号重试，
+                # 没换说明刷不动（无 refresh_token / refresh 失败 / 平台返回原 token），走原删号逻辑。
+                refreshed_token = account_service.try_refresh_access_token(token)
+                if refreshed_token and refreshed_token != token and refreshed_token not in attempted_tokens:
+                    token = refreshed_token
+                    continue
                 account_service.remove_invalid_token(token, "text_stream")
                 token = account_service.get_text_access_token(attempted_tokens)
                 if token:
@@ -657,6 +663,10 @@ def stream_image_outputs_with_pool(request: ConversationRequest) -> Iterator[Ima
                 last_error = str(exc)
                 logger.warning({"event": "image_stream_fail", "request_token": token, "error": last_error})
                 if not emitted_for_token and is_token_invalid_error(last_error):
+                    # 同 stream_text_deltas：先按 source 刷一次，token 真变了才同号重试。
+                    refreshed_token = account_service.try_refresh_access_token(token)
+                    if refreshed_token and refreshed_token != token:
+                        continue
                     account_service.remove_invalid_token(token, "image_stream")
                     continue
                 raise ImageGenerationError(image_stream_error_message(last_error)) from exc
