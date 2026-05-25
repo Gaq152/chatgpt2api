@@ -227,6 +227,14 @@ class ImageTaskService:
     ) -> None:
         started = time.time()
         self._update_task(key, status=TASK_STATUS_RUNNING, error="")
+        # 复用 LoggedCall 的扣减语义：
+        # - 成功（dict.data 非空）→ 扣 1
+        # - 上游/账号池失败（dict.data 空 + upstream message / RuntimeError 默认提示）→ 不扣
+        # - 其他用户原因失败（HTTPException 等）→ 扣 1（按"用户配额"理解，不让违规请求免费重试）
+        # 失败路径在 except 里按异常类型决定。
+        from fastapi import HTTPException
+        from services.protocol.conversation import ImageGenerationError
+
         try:
             handler = self.edit_handler if mode == "edit" else self.generation_handler
             result = handler(payload)
@@ -238,9 +246,11 @@ class ImageTaskService:
                 if upstream:
                     message = upstream
                 else:
-                    message = "号池中没有可用账号或所有账号均被限流，请检查号池状态（账号额度、是否被封禁、是否到达生图上限）"
+                    message = "号池中没有可用账号或所有账号均被限流，请检查号池状态（账号额度、是否被封禁、是否到达生图上限)"
+                # data 空说明号池/上游兜底，不扣配额
                 raise RuntimeError(message)
             self._update_task(key, status=TASK_STATUS_SUCCESS, data=data, error="")
+            self._consume_user_quota(identity)
             self._log_call(
                 identity,
                 mode,
@@ -250,19 +260,50 @@ class ImageTaskService:
                 request_preview=request_text(payload.get("prompt")),
                 urls=_collect_image_urls(data),
             )
-        except Exception as exc:
+        except ImageGenerationError as exc:
+            # 上游 / 账号池问题（含 content_policy_violation 也归到这里），不扣
             error_message = str(exc) or "image task failed"
             self._update_task(key, status=TASK_STATUS_ERROR, error=error_message, data=[])
             self._log_call(
-                identity,
-                mode,
-                model,
-                started,
-                "调用失败",
+                identity, mode, model, started, "调用失败",
                 request_preview=request_text(payload.get("prompt")),
-                status="failed",
-                error=error_message,
+                status="failed", error=error_message,
             )
+        except HTTPException as exc:
+            # 用户输入相关失败（敏感词等），与 LoggedCall 同步扣 1
+            error_message = str(exc.detail) or "image task failed"
+            self._update_task(key, status=TASK_STATUS_ERROR, error=error_message, data=[])
+            self._consume_user_quota(identity)
+            self._log_call(
+                identity, mode, model, started, "调用失败",
+                request_preview=request_text(payload.get("prompt")),
+                status="failed", error=error_message,
+            )
+        except Exception as exc:
+            # 兜底失败（含 data 为空抛的 RuntimeError），不扣
+            error_message = str(exc) or "image task failed"
+            self._update_task(key, status=TASK_STATUS_ERROR, error=error_message, data=[])
+            self._log_call(
+                identity, mode, model, started, "调用失败",
+                request_preview=request_text(payload.get("prompt")),
+                status="failed", error=error_message,
+            )
+
+    @staticmethod
+    def _consume_user_quota(identity: dict[str, object]) -> None:
+        """与 LoggedCall._consume_user_quota 行为一致：admin / 未配额 user 走 no-op，
+        失败也吞掉，绝不影响主流程。
+        """
+        if str(identity.get("role") or "").strip().lower() != "user":
+            return
+        key_id = str(identity.get("id") or "").strip()
+        if not key_id:
+            return
+        try:
+            from services.auth_service import auth_service
+            auth_service.consume_quota(key_id)
+        except Exception:
+            pass
 
     def _log_call(
         self,
