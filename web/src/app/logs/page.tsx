@@ -15,6 +15,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { deleteSystemLogs, fetchSystemLogs, type SystemLog } from "@/lib/api";
+import { formatTime } from "@/lib/format-time";
 import { useAuthGuard } from "@/lib/use-auth-guard";
 
 const LogType = {
@@ -211,7 +212,7 @@ function LogsContent() {
                       <TableCell>
                         <Checkbox checked={selectedSet.has(item.id)} onCheckedChange={(checked) => toggleIds([item.id], Boolean(checked))} />
                       </TableCell>
-                      <TableCell className="whitespace-nowrap">{item.time}</TableCell>
+                      <TableCell className="whitespace-nowrap">{formatTime(item.time, { withSeconds: true })}</TableCell>
                       <TableCell><Badge variant="secondary" className="rounded-md">{typeLabels[item.type] || item.type}</Badge></TableCell>
                       {isCallLog ? <TableCell>{getDetailText(item, "key_name")}</TableCell> : null}
                       {isCallLog ? <TableCell>{formatDuration(item)}</TableCell> : null}
@@ -286,12 +287,16 @@ function LogsContent() {
               <div className="grid gap-3 rounded-xl border border-stone-200 bg-white p-4 text-sm text-stone-600 md:grid-cols-2">
                 {Object.entries(detailLog?.detail || {})
                   .filter(([key, value]) => key !== "urls" && typeof value !== "object")
-                  .map(([key, value]) => (
-                    <div key={key} className="flex items-start justify-between gap-4">
-                      <span className="text-stone-400">{key}</span>
-                      <span className="text-right font-medium break-all text-stone-700">{String(value)}</span>
-                    </div>
-                  ))}
+                  .map(([key, value]) => {
+                    const isTimeField = key === "started_at" || key === "ended_at";
+                    const display = isTimeField ? formatTime(String(value), { withSeconds: true }) : String(value);
+                    return (
+                      <div key={key} className="flex items-start justify-between gap-4">
+                        <span className="text-stone-400">{key}</span>
+                        <span className="text-right font-medium break-all text-stone-700">{display}</span>
+                      </div>
+                    );
+                  })}
               </div>
               {detailUrls.length ? (
                 <div className="grid gap-3 sm:grid-cols-2 md:grid-cols-3">

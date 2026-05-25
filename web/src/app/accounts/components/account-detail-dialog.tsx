@@ -14,6 +14,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { fetchAccountDetail, type AccountDetail } from "@/lib/api";
+import { formatTime } from "@/lib/format-time";
 import { cn } from "@/lib/utils";
 
 const SOURCE_LABELS: Record<string, string> = {
@@ -24,20 +25,7 @@ const SOURCE_LABELS: Record<string, string> = {
 };
 
 function formatDateTime(value?: string | null) {
-  if (!value) {
-    return "—";
-  }
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) {
-    return value;
-  }
-  return new Intl.DateTimeFormat("zh-CN", {
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-  }).format(date);
+  return formatTime(value);
 }
 
 function maskValue(value: string) {
