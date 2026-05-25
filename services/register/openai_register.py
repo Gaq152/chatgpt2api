@@ -47,6 +47,10 @@ auth_base = "https://auth.openai.com"
 platform_base = "https://platform.openai.com"
 platform_oauth_client_id = "app_2SKx67EdpoN0G6j64rFvigXD"
 platform_oauth_redirect_uri = f"{platform_base}/auth/callback"
+# Codex CLI / cliproxyapi 导出的账号用的是另一套 OAuth client（azp=app_EMoamEEZ73f0CkXaXp7hrann）。
+# refresh_token 颁发时绑了哪个 client_id，刷新时就得用那个，否则上游会 invalid_grant。
+codex_oauth_client_id = "app_EMoamEEZ73f0CkXaXp7hrann"
+codex_oauth_redirect_uri = "http://localhost:1455/auth/callback"
 platform_oauth_audience = "https://api.openai.com/v1"
 platform_auth0_client = "eyJuYW1lIjoiYXV0aDAtc3BhLWpzIiwidmVyc2lvbiI6IjEuMjEuMCJ9"
 user_agent = (
@@ -443,22 +447,46 @@ def exchange_platform_tokens(session: requests.Session, device_id: str, code_ver
     }
 
 
-def refresh_platform_tokens(refresh_token: str) -> dict | None:
+def _decode_jwt_payload(token: str) -> dict:
+    """解 JWT 第二段 payload，失败返回空 dict。仅用于读 azp / iat / exp 等公开字段。"""
+    try:
+        import base64
+        payload = str(token or "").split(".")[1]
+        payload += "=" * ((4 - len(payload) % 4) % 4)
+        return json.loads(base64.urlsafe_b64decode(payload.encode("ascii"))) or {}
+    except Exception:
+        return {}
+
+
+def _resolve_oauth_client_id(access_token: str) -> str:
+    """按 access_token JWT 里的 azp 选刷新用的 client_id，解不出兜底 platform。"""
+    azp = str(_decode_jwt_payload(access_token).get("azp") or "").strip()
+    if azp == codex_oauth_client_id:
+        return codex_oauth_client_id
+    return platform_oauth_client_id
+
+
+def refresh_platform_tokens(refresh_token: str, access_token: str = "") -> dict | None:
     """用 refresh_token 走 OAuth 端点换一组新的 access/refresh/id token。
 
     refresh 端点会轮换 refresh_token，调用方需要把响应里的新值写回。
     某些情况下 id_token 不会重新返回，这种时候由调用方决定是否保留旧值。
+
+    access_token 用来解 azp 选 client_id（platform / codex 两套）。refresh_token 是
+    不透明字符串无法识别来源；JWT 颁发时绑的 client_id 必须和刷新时一致，否则上游
+    返回 invalid_grant。不传 access_token 时默认走 platform。
     """
     candidate = str(refresh_token or "").strip()
     if not candidate:
         return None
+    client_id = _resolve_oauth_client_id(access_token)
     try:
         resp = create_session(config["proxy"]).post(
             f"{auth_base}/oauth/token",
             headers={"Content-Type": "application/x-www-form-urlencoded"},
             data={
                 "grant_type": "refresh_token",
-                "client_id": platform_oauth_client_id,
+                "client_id": client_id,
                 "refresh_token": candidate,
                 "scope": "openid profile email offline_access",
             },
@@ -466,10 +494,11 @@ def refresh_platform_tokens(refresh_token: str) -> dict | None:
             timeout=60,
         )
     except Exception as exc:
-        print(f"[refresh_platform_tokens] request failed: {exc}")
+        print(f"[refresh_platform_tokens] request failed (client_id={client_id}): {exc}")
         return None
     data = _response_json(resp)
     if resp.status_code != 200 or not data.get("access_token"):
+        print(f"[refresh_platform_tokens] http {resp.status_code} client_id={client_id} body={str(data)[:200]}")
         return None
     return {
         "access_token": str(data.get("access_token") or "").strip(),
