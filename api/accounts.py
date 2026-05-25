@@ -4,7 +4,7 @@ import io
 import json
 import re
 import zipfile
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
 
 from fastapi import APIRouter, Header, HTTPException
@@ -120,7 +120,7 @@ def _unique_tokens(tokens: list[str]) -> list[str]:
 
 
 def _download_timestamp() -> str:
-    return datetime.now().strftime("%Y%m%d-%H%M%S")
+    return datetime.now(timezone(timedelta(hours=8))).strftime("%Y%m%d-%H%M%S")
 
 
 def _safe_export_name(value: str, fallback: str) -> str:

@@ -50,7 +50,7 @@ class AccountService:
 
     @staticmethod
     def _now() -> str:
-        return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        return datetime.now(timezone.utc).isoformat()
 
     def _load_accounts(self) -> dict[str, dict]:
         accounts = self.storage.load_accounts()
@@ -238,7 +238,7 @@ class AccountService:
             if current is None:
                 return
             next_item = dict(current)
-            next_item["last_used_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            next_item["last_used_at"] = self._now()
             account = self._normalize_account(next_item)
             if account is None:
                 return
@@ -534,7 +534,7 @@ class AccountService:
             if current is None:
                 return None
             next_item = dict(current)
-            next_item["last_used_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            next_item["last_used_at"] = self._now()
             image_quota_unknown = bool(next_item.get("image_quota_unknown"))
             if success:
                 next_item["success"] = int(next_item.get("success") or 0) + 1

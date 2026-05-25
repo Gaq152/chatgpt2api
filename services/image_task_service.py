@@ -4,7 +4,7 @@ import json
 import threading
 import time
 from collections.abc import Callable
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -22,12 +22,16 @@ UNFINISHED_STATUSES = {TASK_STATUS_QUEUED, TASK_STATUS_RUNNING}
 
 
 def _now_iso() -> str:
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    return datetime.now(timezone.utc).isoformat()
 
 
 def _timestamp(value: object) -> float:
     if not isinstance(value, str) or not value.strip():
         return 0.0
+    try:
+        return datetime.fromisoformat(value).timestamp()
+    except ValueError:
+        pass
     for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S.%f", "%Y-%m-%dT%H:%M:%S"):
         try:
             return datetime.strptime(value[:26], fmt).timestamp()
@@ -281,7 +285,7 @@ class ImageTaskService:
             "role": identity.get("role"),
             "endpoint": endpoint,
             "model": model,
-            "started_at": datetime.fromtimestamp(started).strftime("%Y-%m-%d %H:%M:%S"),
+            "started_at": datetime.fromtimestamp(started, tz=timezone.utc).isoformat(),
             "ended_at": _now_iso(),
             "duration_ms": int((time.time() - started) * 1000),
             "status": status,

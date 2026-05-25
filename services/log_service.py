@@ -5,7 +5,7 @@ import json
 import itertools
 import time
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -47,10 +47,25 @@ class LogService:
     def _serialize_item(item: dict[str, Any]) -> str:
         return json.dumps(item, ensure_ascii=False, separators=(",", ":"))
 
-    @staticmethod
-    def _matches_filters(item: dict[str, Any], *, type: str = "", start_date: str = "", end_date: str = "") -> bool:
-        t = str(item.get("time") or "")
-        day = t[:10]
+    # 日期筛选按用户所在时区（默认 +8）的那一天进行匹配，
+    # 老条目（无时区信息的本地字符串）按字面前缀回退处理。
+    _DISPLAY_TZ = timezone(timedelta(hours=8))
+
+    @classmethod
+    def _local_day(cls, raw_time: str) -> str:
+        if not raw_time:
+            return ""
+        try:
+            parsed = datetime.fromisoformat(raw_time)
+        except ValueError:
+            return raw_time[:10]
+        if parsed.tzinfo is None:
+            return raw_time[:10]
+        return parsed.astimezone(cls._DISPLAY_TZ).strftime("%Y-%m-%d")
+
+    @classmethod
+    def _matches_filters(cls, item: dict[str, Any], *, type: str = "", start_date: str = "", end_date: str = "") -> bool:
+        day = cls._local_day(str(item.get("time") or ""))
         if type and item.get("type") != type:
             return False
         if start_date and day < start_date:
@@ -62,7 +77,7 @@ class LogService:
     def add(self, type: str, summary: str = "", detail: dict[str, Any] | None = None, **data: Any) -> None:
         item = {
             "id": uuid4().hex,
-            "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "time": datetime.now(timezone.utc).isoformat(),
             "type": type,
             "summary": summary,
             "detail": detail or data,
@@ -261,8 +276,8 @@ class LoggedCall:
             "role": self.identity.get("role"),
             "endpoint": self.endpoint,
             "model": self.model,
-            "started_at": datetime.fromtimestamp(self.started).strftime("%Y-%m-%d %H:%M:%S"),
-            "ended_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "started_at": datetime.fromtimestamp(self.started, tz=timezone.utc).isoformat(),
+            "ended_at": datetime.now(timezone.utc).isoformat(),
             "duration_ms": int((time.time() - self.started) * 1000),
             "status": status,
         }

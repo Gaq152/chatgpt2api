@@ -5,7 +5,7 @@ import io
 import json
 import time
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from threading import Lock
 from urllib.parse import quote, urlparse
@@ -38,7 +38,7 @@ def _clean(value: object) -> str:
 
 
 def _now_iso() -> str:
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    return datetime.now(timezone.utc).isoformat()
 
 
 def _safe_relative_path(path: str) -> str:
@@ -288,9 +288,9 @@ class ImageStorageService:
                     "rel": rel,
                     "path": rel,
                     "name": path.name,
-                    "date": "-".join(rel.split("/")[:3]) if len(rel.split("/")) >= 4 else datetime.fromtimestamp(path.stat().st_mtime).strftime("%Y-%m-%d"),
+                    "date": "-".join(rel.split("/")[:3]) if len(rel.split("/")) >= 4 else datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc).strftime("%Y-%m-%d"),
                     "size": path.stat().st_size,
-                    "created_at": datetime.fromtimestamp(path.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S"),
+                    "created_at": datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc).isoformat(),
                     "storage": "local",
                     "local": True,
                     "webdav": False,
@@ -383,9 +383,9 @@ class ImageStorageService:
                         "rel": rel,
                         "path": rel,
                         "name": path.name,
-                        "date": "-".join(rel.split("/")[:3]) if len(rel.split("/")) >= 4 else datetime.fromtimestamp(path.stat().st_mtime).strftime("%Y-%m-%d"),
+                        "date": "-".join(rel.split("/")[:3]) if len(rel.split("/")) >= 4 else datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc).strftime("%Y-%m-%d"),
                         "size": len(payload),
-                        "created_at": str(item.get("created_at") or datetime.fromtimestamp(path.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S")),
+                        "created_at": str(item.get("created_at") or datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc).isoformat()),
                         "storage": "both",
                         "local": True,
                         "webdav": True,
