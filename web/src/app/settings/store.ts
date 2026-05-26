@@ -648,8 +648,8 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
   },
 
   setRegisterConfig: (incoming) => {
-    const { isSavingRegister, registerConfig: current } = get();
-    if (isSavingRegister && current) {
+    const { registerConfig: current } = get();
+    if (current) {
       set({
         registerConfig: { ...current, logs: incoming.logs, stats: incoming.stats, enabled: incoming.enabled },
         isLoadingRegister: false,
