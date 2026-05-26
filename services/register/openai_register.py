@@ -533,6 +533,13 @@ def relogin_for_tokens(email: str, password: str, stored_mailbox: dict | None = 
             mailbox = create_mailbox(local_part)
         except Exception:
             mailbox = {"address": email}
+    provider_type = str(mailbox.get("provider") or "").strip()
+    if provider_type:
+        try:
+            mail_provider._create_provider(config["mail"], provider_type, str(mailbox.get("provider_ref") or ""))
+        except RuntimeError as exc:
+            log(f"[relogin] {email} 跳过重登: {exc}", "yellow")
+            return None
     registrar = PlatformRegistrar(config["proxy"])
     try:
         tokens = registrar._login_and_exchange_tokens(email, password, mailbox, 0)
@@ -817,8 +824,8 @@ class PlatformRegistrar:
         email = str(mailbox.get("address") or "").strip()
         if not email:
             raise RuntimeError("邮箱服务未返回 address")
-        label = str(mailbox.get("label") or "")
-        step(index, f"邮箱创建完成[{label}]: {email}")
+        channel = str(mailbox.get("label") or mailbox.get("provider") or "").strip()
+        step(index, f"邮箱创建完成[{channel}]({email})")
         password = _random_password()
         first_name, last_name = _random_name()
         self._platform_authorize(email, index)

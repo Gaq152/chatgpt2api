@@ -213,6 +213,7 @@ def _message_tracking_ref(message: dict[str, Any]) -> str:
 
 class BaseMailProvider:
     name = "unknown"
+    mailbox_ttl_hours = 0  # 0 = 永久有效，>0 = 约 N 小时后过期
 
     def __init__(self, conf: dict, provider_ref: str = ""):
         self.conf = conf
@@ -254,6 +255,7 @@ class BaseMailProvider:
 
 class CloudflareTempMailProvider(BaseMailProvider):
     name = "cloudflare_temp_email"
+    mailbox_ttl_hours = 0  # 自建服务，永久有效
 
     def __init__(self, entry: dict, conf: dict):
         super().__init__(conf, str(entry.get("provider_ref") or ""))
@@ -295,6 +297,7 @@ class CloudflareTempMailProvider(BaseMailProvider):
 
 class DDGMailProvider(BaseMailProvider):
     name = "ddg_mail"
+    mailbox_ttl_hours = 0  # DDG 别名永久转发，收件箱有效期取决于 CF 后端
 
     def __init__(self, entry: dict, conf: dict):
         super().__init__(conf, str(entry.get("provider_ref") or ""))
@@ -420,6 +423,7 @@ class DDGMailProvider(BaseMailProvider):
 
 class CloudMailGenProvider(BaseMailProvider):
     name = "cloudmail_gen"
+    mailbox_ttl_hours = 0  # 自建服务，永久有效
 
     def __init__(self, entry: dict, conf: dict):
         super().__init__(conf, str(entry.get("provider_ref") or ""))
@@ -539,6 +543,7 @@ class CloudMailGenProvider(BaseMailProvider):
 
 class TempMailLolProvider(BaseMailProvider):
     name = "tempmail_lol"
+    mailbox_ttl_hours = 1  # 免费版约 1 小时过期，付费版更长
 
     def __init__(self, entry: dict, conf: dict):
         super().__init__(conf, str(entry.get("provider_ref") or ""))
@@ -598,6 +603,7 @@ class TempMailLolProvider(BaseMailProvider):
 
 class DuckMailProvider(BaseMailProvider):
     name = "duckmail"
+    mailbox_ttl_hours = 0  # 永久有效
 
     def __init__(self, entry: dict, conf: dict):
         super().__init__(conf, str(entry.get("provider_ref") or ""))
@@ -649,6 +655,7 @@ class DuckMailProvider(BaseMailProvider):
 
 class GptMailProvider(BaseMailProvider):
     name = "gptmail"
+    mailbox_ttl_hours = 0  # 永久有效，按 API Key + 地址收件
 
     def __init__(self, entry: dict, conf: dict):
         super().__init__(conf, str(entry.get("provider_ref") or ""))
@@ -687,6 +694,7 @@ class GptMailProvider(BaseMailProvider):
 
 class MoEmailProvider(BaseMailProvider):
     name = "moemail"
+    mailbox_ttl_hours = 0  # 自建服务，有效期由 expiry_time 参数控制
 
     def __init__(self, entry: dict, conf: dict):
         super().__init__(conf, str(entry.get("provider_ref") or ""))
@@ -742,6 +750,7 @@ class MoEmailProvider(BaseMailProvider):
 
 class InbucketMailProvider(BaseMailProvider):
     name = "inbucket"
+    mailbox_ttl_hours = 0  # 自建服务，永久有效
 
     def __init__(self, entry: dict, conf: dict):
         super().__init__(conf, str(entry.get("provider_ref") or ""))
@@ -845,6 +854,7 @@ class InbucketMailProvider(BaseMailProvider):
 
 class YydsMailProvider(BaseMailProvider):
     name = "yyds_mail"
+    mailbox_ttl_hours = 24  # 约 24 小时过期
 
     def __init__(self, entry: dict, conf: dict):
         super().__init__(conf, str(entry.get("provider_ref") or ""))
@@ -938,7 +948,10 @@ def _next_entry(mail_config: dict) -> dict:
 
 def _create_provider(mail_config: dict, provider: str = "", provider_ref: str = "") -> BaseMailProvider:
     entry = next((dict(item) for item in _entries(mail_config) if provider_ref and item["provider_ref"] == provider_ref), None)
-    entry = entry or next((dict(item) for item in _enabled_entries(mail_config) if provider and item["type"] == provider), None) or _next_entry(mail_config)
+    entry = entry or next((dict(item) for item in _enabled_entries(mail_config) if provider and item["type"] == provider), None)
+    if entry is None and provider:
+        raise RuntimeError(f"邮箱渠道 {provider} 未配置或未启用，无法为该邮箱接码")
+    entry = entry or _next_entry(mail_config)
     conf = _config(mail_config)
     if entry["type"] == "cloudmail_gen":
         return CloudMailGenProvider(entry, conf)
