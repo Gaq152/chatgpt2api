@@ -25,19 +25,31 @@ function RegisterDataController() {
   useEffect(() => {
     let source: EventSource | null = null;
     let closed = false;
+    let lastEventTime = Date.now();
     void getStoredAuthKey().then((token) => {
       if (closed || !token) return;
       const baseUrl = webConfig.apiUrl.replace(/\/$/, "");
       source = new EventSource(`${baseUrl}/api/register/events?token=${encodeURIComponent(token)}`);
       source.onmessage = (event) => {
+        lastEventTime = Date.now();
         setRegisterConfig(JSON.parse(event.data) as RegisterConfig);
       };
+      source.onerror = () => {
+        if (closed) return;
+        void loadRegister(true);
+      };
     });
+    const fallback = setInterval(() => {
+      if (Date.now() - lastEventTime > 5000) {
+        void loadRegister(true);
+      }
+    }, 5000);
     return () => {
       closed = true;
       source?.close();
+      clearInterval(fallback);
     };
-  }, [setRegisterConfig]);
+  }, [setRegisterConfig, loadRegister]);
 
   return null;
 }

@@ -785,16 +785,19 @@ class AccountService:
                 refresh_token = str(snapshot.get("refresh_token") or "").strip()
                 refreshed = False
                 if refresh_token:
-                    from services.register.openai_register import refresh_platform_tokens
-                    new_tokens = refresh_platform_tokens(refresh_token, access_token)
-                    if new_tokens and new_tokens.get("access_token"):
-                        updates: dict[str, Any] = {"access_token": new_tokens["access_token"]}
-                        if new_tokens.get("refresh_token"):
-                            updates["refresh_token"] = new_tokens["refresh_token"]
-                        if new_tokens.get("id_token"):
-                            updates["id_token"] = new_tokens["id_token"]
-                        access_token = self._swap_access_token(access_token, updates)
-                        refreshed = True
+                    try:
+                        from services.register.openai_register import refresh_platform_tokens
+                        new_tokens = refresh_platform_tokens(refresh_token, access_token)
+                        if new_tokens and new_tokens.get("access_token"):
+                            updates: dict[str, Any] = {"access_token": new_tokens["access_token"]}
+                            if new_tokens.get("refresh_token"):
+                                updates["refresh_token"] = new_tokens["refresh_token"]
+                            if new_tokens.get("id_token"):
+                                updates["id_token"] = new_tokens["id_token"]
+                            access_token = self._swap_access_token(access_token, updates)
+                            refreshed = True
+                    except Exception as exc:
+                        print(f"[refresh_accounts] refresh_token 刷新失败: {exc}")
                 if not refreshed:
                     access_token = self._try_relogin_recovery(access_token, snapshot)
             elif source == "sub2api":

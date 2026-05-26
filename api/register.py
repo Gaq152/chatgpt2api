@@ -56,11 +56,18 @@ def create_router() -> APIRouter:
 
         async def stream():
             last = ""
+            idle_ticks = 0
             while True:
                 payload = json.dumps(register_service.get(), ensure_ascii=False)
                 if payload != last:
                     last = payload
                     yield f"data: {payload}\n\n"
+                    idle_ticks = 0
+                else:
+                    idle_ticks += 1
+                    if idle_ticks >= 30:
+                        yield ": heartbeat\n\n"
+                        idle_ticks = 0
                 await asyncio.sleep(0.5)
 
         return StreamingResponse(stream(), media_type="text/event-stream")
