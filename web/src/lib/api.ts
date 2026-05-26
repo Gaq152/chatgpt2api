@@ -36,6 +36,7 @@ export type Account = {
   source_pool_file?: string | null;
   source_server_id?: string | null;
   status_reason?: string | null;
+  mail_provider?: string | null;
 };
 
 export type AccountDetail = Account & {

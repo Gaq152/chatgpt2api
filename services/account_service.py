@@ -361,10 +361,14 @@ class AccountService:
     def list_accounts(self) -> list[dict]:
         """对外列表，剥掉 password 等只持久化、不该回显前端的敏感字段。"""
         with self._lock:
-            return [
-                {key: value for key, value in item.items() if key not in {"password", "mailbox_data"}}
-                for item in self._accounts.values()
-            ]
+            result: list[dict] = []
+            for item in self._accounts.values():
+                row = {key: value for key, value in item.items() if key not in {"password", "mailbox_data"}}
+                mailbox_data = item.get("mailbox_data")
+                if isinstance(mailbox_data, dict) and mailbox_data.get("provider"):
+                    row["mail_provider"] = mailbox_data["provider"]
+                result.append(row)
+            return result
 
     @staticmethod
     def _decode_jwt_payload(token: str) -> dict:

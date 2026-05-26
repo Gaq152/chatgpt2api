@@ -203,6 +203,8 @@ function AccountsPageContent() {
   const [typeFilter, setTypeFilter] = useState("all");
   const [statusFilter, setStatusFilter] = useState<AccountStatus | "all">("all");
   const [sourceFilter, setSourceFilter] = useState("all");
+  const [mailProviderFilter, setMailProviderFilter] = useState("all");
+  const [sortOrder, setSortOrder] = useState<"created_asc" | "created_desc">("created_desc");
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState("10");
   const [editingAccount, setEditingAccount] = useState<Account | null>(null);
@@ -242,15 +244,23 @@ function AccountsPageContent() {
 
   const filteredAccounts = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
-    return accounts.filter((account) => {
+    const filtered = accounts.filter((account) => {
       const searchMatched =
         normalizedQuery.length === 0 || (account.email ?? "").toLowerCase().includes(normalizedQuery);
       const typeMatched = typeFilter === "all" || displayAccountType(account) === typeFilter;
       const statusMatched = statusFilter === "all" || account.status === statusFilter;
       const sourceMatched = sourceFilter === "all" || displayAccountSource(account) === sourceFilter;
-      return searchMatched && typeMatched && statusMatched && sourceMatched;
+      const mailProviderMatched = mailProviderFilter === "all" || (account.mail_provider || "") === mailProviderFilter;
+      return searchMatched && typeMatched && statusMatched && sourceMatched && mailProviderMatched;
     });
-  }, [accounts, query, sourceFilter, statusFilter, typeFilter]);
+    filtered.sort((a, b) => {
+      const ta = new Date(a.created_at || 0).getTime();
+      const tb = new Date(b.created_at || 0).getTime();
+      return sortOrder === "created_asc" ? ta - tb : tb - ta;
+    });
+    return filtered;
+  }, [accounts, query, sourceFilter, statusFilter, typeFilter, mailProviderFilter, sortOrder]);
+
 
   const pageCount = Math.max(1, Math.ceil(filteredAccounts.length / Number(pageSize)));
   const safePage = Math.min(page, pageCount);
@@ -284,6 +294,15 @@ function AccountsPageContent() {
     return [
       { label: "全部来源", value: "all" },
       ...sources.map((value) => ({ label: sourceLabel(value), value })),
+    ];
+  }, [accounts]);
+
+  const mailProviderOptions = useMemo(() => {
+    const providers = Array.from(new Set(accounts.map((a) => a.mail_provider || "").filter(Boolean)));
+    providers.sort((a, b) => a.localeCompare(b));
+    return [
+      { label: "全部渠道", value: "all" },
+      ...providers.map((value) => ({ label: value, value })),
     ];
   }, [accounts]);
 
@@ -617,6 +636,41 @@ function AccountsPageContent() {
                 ))}
               </SelectContent>
             </Select>
+            {mailProviderOptions.length > 1 ? (
+              <Select
+                value={mailProviderFilter}
+                onValueChange={(value) => {
+                  setMailProviderFilter(value);
+                  setPage(1);
+                }}
+              >
+                <SelectTrigger className="h-10 w-full rounded-xl border-stone-200 bg-white/85 lg:w-[160px]">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {mailProviderOptions.map((option) => (
+                    <SelectItem key={option.value} value={option.value}>
+                      {option.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            ) : null}
+            <Select
+              value={sortOrder}
+              onValueChange={(value) => {
+                setSortOrder(value as "created_asc" | "created_desc");
+                setPage(1);
+              }}
+            >
+              <SelectTrigger className="h-10 w-full rounded-xl border-stone-200 bg-white/85 lg:w-[170px]">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="created_desc">创建时间 新→旧</SelectItem>
+                <SelectItem value="created_asc">创建时间 旧→新</SelectItem>
+              </SelectContent>
+            </Select>
           </div>
         </div>
 
@@ -706,9 +760,9 @@ function AccountsPageContent() {
                         onCheckedChange={(checked) => toggleSelectAll(Boolean(checked))}
                       />
                     </th>
+                    <th className="w-56 px-4 py-3">账号信息</th>
                     <th className="w-28 px-4 py-3">类型</th>
                     <th className="w-24 px-4 py-3">状态</th>
-                    <th className="w-56 px-4 py-3">账号信息</th>
                     <th className="w-24 px-4 py-3">额度</th>
                     <th className="w-40 px-4 py-3">恢复时间</th>
                     <th className="w-18 px-4 py-3">成功</th>
@@ -739,6 +793,9 @@ function AccountsPageContent() {
                           />
                         </td>
                         <td className="px-4 py-3">
+                          <div className="text-xs leading-5 text-stone-500">{renderPrivacyEmail(account.email)}</div>
+                        </td>
+                        <td className="px-4 py-3">
                           <Badge variant="secondary" className="rounded-md bg-stone-100 text-stone-700">
                             {displayAccountType(account)}
                           </Badge>
@@ -752,9 +809,6 @@ function AccountsPageContent() {
                             <StatusIcon className="size-3.5" />
                             {account.status}
                           </Badge>
-                        </td>
-                        <td className="px-4 py-3">
-                          <div className="text-xs leading-5 text-stone-500">{renderPrivacyEmail(account.email)}</div>
                         </td>
                         <td className="px-4 py-3">
                           <Badge variant="info" className="rounded-md">
