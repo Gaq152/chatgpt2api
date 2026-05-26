@@ -3,7 +3,7 @@ from __future__ import annotations
 import base64
 import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from threading import Condition, Lock
+from threading import Condition, Event, Lock
 from typing import Any
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -27,6 +27,8 @@ class AccountService:
         self._index = 0
         self._accounts = self._load_accounts()
         self._image_inflight: dict[str, int] = {}
+        self._refresh_events: dict[str, Event] = {}
+        self._refresh_results: dict[str, str] = {}
         self._cumulative_total = self._load_cumulative_total()
 
     def _get_cumulative_file(self) -> Path:
@@ -154,6 +156,9 @@ class AccountService:
         normalized["source_pool_id"] = (normalized.get("source_pool_id") or "") or None
         normalized["source_pool_file"] = (normalized.get("source_pool_file") or "") or None
         normalized["source_server_id"] = (normalized.get("source_server_id") or "") or None
+        mailbox_data = normalized.get("mailbox_data")
+        normalized["mailbox_data"] = mailbox_data if isinstance(mailbox_data, dict) else None
+        normalized["status_reason"] = (normalized.get("status_reason") or "") or None
         return normalized
 
     def list_tokens(self) -> list[str]:
@@ -329,20 +334,21 @@ class AccountService:
                 self._accounts[access_token] = account
                 self._save_accounts()
 
-    def remove_invalid_token(self, access_token: str, event: str) -> bool:
+    def remove_invalid_token(self, access_token: str, event: str, reason: str = "") -> bool:
         # 缓判：新号 10 分钟内 / 第一次 401 / 30 秒内重复 401 都先记账不真删，
         # 连续两次确认（且超出抖动窗口）才放过来走原删除流程。
         if access_token and not self._record_invalid_seen(access_token, event):
             return False
+        status_reason = reason or f"token 无效 ({event})"
         if not config.auto_remove_invalid_accounts:
-            self.update_account(access_token, {"status": "异常", "quota": 0})
+            self.update_account(access_token, {"status": "异常", "quota": 0, "status_reason": status_reason})
             return False
         removed = bool(self.delete_accounts([access_token])["removed"])
         if removed:
             log_service.add(LOG_TYPE_ACCOUNT, "自动移除异常账号",
                             {"source": event, "token": anonymize_token(access_token)})
         elif access_token:
-            self.update_account(access_token, {"status": "异常", "quota": 0})
+            self.update_account(access_token, {"status": "异常", "quota": 0, "status_reason": status_reason})
         return removed
 
     def get_account(self, access_token: str) -> dict | None:
@@ -356,7 +362,7 @@ class AccountService:
         """对外列表，剥掉 password 等只持久化、不该回显前端的敏感字段。"""
         with self._lock:
             return [
-                {key: value for key, value in item.items() if key != "password"}
+                {key: value for key, value in item.items() if key not in {"password", "mailbox_data"}}
                 for item in self._accounts.values()
             ]
 
@@ -472,6 +478,7 @@ class AccountService:
         "source_pool_id",
         "source_pool_file",
         "source_server_id",
+        "mailbox_data",
     )
 
     def add_account_items(self, items: list[dict]) -> dict:
@@ -614,7 +621,10 @@ class AccountService:
             current = self._accounts.get(access_token)
             if current is None:
                 return None
-            account = self._normalize_account({**current, **updates, "access_token": access_token})
+            merged = {**current, **updates, "access_token": access_token}
+            if merged.get("status") not in {"异常"} and "status_reason" not in updates:
+                merged["status_reason"] = None
+            account = self._normalize_account(merged)
             if account is None:
                 return None
             if account.get("status") == "限流" and config.auto_remove_rate_limited_accounts:
@@ -674,8 +684,8 @@ class AccountService:
         try:
             from services.openai_backend_api import InvalidAccessTokenError, OpenAIBackendAPI
             result = OpenAIBackendAPI(access_token).get_user_info()
-        except InvalidAccessTokenError:
-            self.remove_invalid_token(access_token, event)
+        except InvalidAccessTokenError as exc:
+            self.remove_invalid_token(access_token, event, reason=str(exc))
             raise
         # 远端拿到信息说明 token 仍然有效，清掉之前累计的 401 计数
         self._clear_invalid_count(access_token)
@@ -713,17 +723,67 @@ class AccountService:
         """按 source 走差异化刷新，返回当前生效的 access_token（可能被替换）。
 
         任何刷新策略失败都会回退到 fetch_remote_info（仅刷额度），保证流程不中断。
+
+        OpenAI 使用 rotating refresh token——用过一次即作废。如果多个线程同时拿同一个
+        refresh_token 去刷新，第一个成功、后续全部 "already been used"。这里用
+        per-token Event 做并发屏障：同一 token 同时只有一个线程执行刷新，其余等待结果。
         """
         with self._lock:
-            account = self._accounts.get(access_token)
-            snapshot = dict(account) if account else None
-        if snapshot is None:
-            return access_token
+            existing_event = self._refresh_events.get(access_token)
+            if existing_event is not None:
+                wait_event = existing_event
+            else:
+                account = self._accounts.get(access_token)
+                snapshot = dict(account) if account else None
+                if snapshot is None:
+                    return access_token
+                wait_event = None
+                event = Event()
+                self._refresh_events[access_token] = event
 
+        if wait_event is not None:
+            wait_event.wait(timeout=120)
+            return self._refresh_results.get(access_token, access_token)
+
+        result_token = access_token
+        try:
+            result_token = self._do_refresh(access_token, snapshot)
+        finally:
+            with self._lock:
+                self._refresh_events.pop(access_token, None)
+                self._refresh_results[access_token] = result_token
+            event.set()
+
+        return result_token
+
+    def _try_relogin_recovery(self, access_token: str, snapshot: dict) -> str:
+        """refresh_token 作废后，尝试用存储的邮箱+密码重新登录换取全新三件套。"""
+        email = str(snapshot.get("email") or "").strip()
+        password = str(snapshot.get("password") or "").strip()
+        if not email or not password:
+            return access_token
+        try:
+            from services.register.openai_register import relogin_for_tokens
+            print(f"[refresh_accounts] refresh_token 失效，尝试密码重登: {email}")
+            mailbox_data = snapshot.get("mailbox_data") if isinstance(snapshot.get("mailbox_data"), dict) else None
+            login_tokens = relogin_for_tokens(email, password, mailbox_data)
+            if login_tokens and login_tokens.get("access_token"):
+                updates: dict[str, Any] = {"access_token": login_tokens["access_token"]}
+                if login_tokens.get("refresh_token"):
+                    updates["refresh_token"] = login_tokens["refresh_token"]
+                if login_tokens.get("id_token"):
+                    updates["id_token"] = login_tokens["id_token"]
+                return self._swap_access_token(access_token, updates)
+        except Exception as exc:
+            print(f"[refresh_accounts] 密码重登异常: {email}: {exc}")
+        return access_token
+
+    def _do_refresh(self, access_token: str, snapshot: dict) -> str:
         source = str(snapshot.get("source") or "manual")
         try:
             if source in {"manual", "register"}:
                 refresh_token = str(snapshot.get("refresh_token") or "").strip()
+                refreshed = False
                 if refresh_token:
                     from services.register.openai_register import refresh_platform_tokens
                     new_tokens = refresh_platform_tokens(refresh_token, access_token)
@@ -734,6 +794,9 @@ class AccountService:
                         if new_tokens.get("id_token"):
                             updates["id_token"] = new_tokens["id_token"]
                         access_token = self._swap_access_token(access_token, updates)
+                        refreshed = True
+                if not refreshed:
+                    access_token = self._try_relogin_recovery(access_token, snapshot)
             elif source == "sub2api":
                 server_id = str(snapshot.get("source_server_id") or "").strip()
                 account_id = str(snapshot.get("source_account_id") or "").strip()
@@ -755,7 +818,7 @@ class AccountService:
                 pool_id = str(snapshot.get("source_pool_id") or "").strip()
                 file_name = (
                     str(snapshot.get("source_pool_file") or "").strip()
-                    or str(snapshot.get("email") or "").strip()  # 兼容老数据：早期没存 source_pool_file
+                    or str(snapshot.get("email") or "").strip()
                 )
                 if pool_id and file_name:
                     from services.cpa_service import cpa_config, fetch_remote_account

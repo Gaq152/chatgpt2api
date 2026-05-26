@@ -515,6 +515,36 @@ def refresh_platform_tokens(refresh_token: str, access_token: str = "") -> dict 
     }
 
 
+def relogin_for_tokens(email: str, password: str, stored_mailbox: dict | None = None) -> dict | None:
+    """用邮箱+密码重新登录换取全新三件套。
+
+    refresh_token 作废后的自动恢复手段。登录可能触发 OTP 验证码，
+    此时优先使用注册时存储的 mailbox 数据（含 provider token）接码，
+    其次尝试用配置的邮件服务为同一地址重建邮箱接码。
+    """
+    if not email or not password:
+        return None
+    mailbox: dict | None = None
+    if isinstance(stored_mailbox, dict) and stored_mailbox.get("address"):
+        mailbox = dict(stored_mailbox)
+    if not mailbox:
+        local_part = email.split("@")[0] if "@" in email else None
+        try:
+            mailbox = create_mailbox(local_part)
+        except Exception:
+            mailbox = {"address": email}
+    registrar = PlatformRegistrar(config["proxy"])
+    try:
+        tokens = registrar._login_and_exchange_tokens(email, password, mailbox, 0)
+        log(f"[relogin] {email} 密码重登成功", "green")
+        return tokens
+    except Exception as exc:
+        log(f"[relogin] {email} 密码重登失败: {exc}", "red")
+        return None
+    finally:
+        registrar.close()
+
+
 class PlatformRegistrar:
     def __init__(self, proxy: str = "") -> None:
         self.session = create_session(proxy)
@@ -812,12 +842,14 @@ class PlatformRegistrar:
         if not tokens:
             tokens = self._login_and_exchange_tokens(email, password, mailbox, index)
 
+        mailbox_data = {key: mailbox[key] for key in mailbox if not key.startswith("_")}
         return {
             "email": email,
             "password": password,
             "access_token": str(tokens.get("access_token") or "").strip(),
             "refresh_token": str(tokens.get("refresh_token") or "").strip(),
             "id_token": str(tokens.get("id_token") or "").strip(),
+            "mailbox_data": mailbox_data,
             "created_at": datetime.now(timezone.utc).isoformat(),
         }
 
@@ -836,7 +868,14 @@ def worker(index: int) -> dict:
             account_service.add_account_items([{**result, "source": "register"}])
         else:
             account_service.add_accounts([access_token])
-        account_service.refresh_accounts([access_token])
+        # 仅查询账号信息（额度/类型），不轮换 refresh_token。
+        # 注册刚拿到的三件套是全新的，立即轮换既浪费又有风险：
+        # 如果 HTTP 响应在 proxy/网络中丢失，服务端已轮换但客户端没收到新值，
+        # refresh_token 就永久作废。让 watcher 定时刷新来处理后续轮换。
+        try:
+            account_service.fetch_remote_info(access_token, "register")
+        except Exception:
+            pass
         with stats_lock:
             stats["done"] += 1
             stats["success"] += 1
