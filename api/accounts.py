@@ -217,7 +217,18 @@ def create_router() -> APIRouter:
         account = account_service.get_account(access_token)
         if account is None:
             raise HTTPException(status_code=404, detail={"error": "账号不存在"})
-        return {"item": account}
+        item = dict(account)
+        # 从 JWT 计算 token 过期时间
+        payload = account_service._decode_jwt_payload(access_token)
+        item["token_expired_at"] = account_service._format_iso_cn(payload.get("exp")) or None
+        item["token_issued_at"] = account_service._format_iso_cn(payload.get("iat")) or None
+        # mailbox 摘要（详情可见，列表隐藏）
+        mailbox_data = item.get("mailbox_data") or {}
+        if isinstance(mailbox_data, dict) and mailbox_data.get("provider"):
+            item["mail_provider"] = mailbox_data.get("provider")
+            item["mail_provider_ref"] = mailbox_data.get("provider_ref") or None
+            item["has_mail_token"] = bool(mailbox_data.get("token") or mailbox_data.get("email_id"))
+        return {"item": item}
 
     @router.post("/api/accounts")
     async def create_accounts(body: AccountCreateRequest, authorization: str | None = Header(default=None)):
