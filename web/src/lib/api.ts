@@ -35,10 +35,16 @@ export type Account = {
   source_pool_id?: string | null;
   source_pool_file?: string | null;
   source_server_id?: string | null;
+  status_reason?: string | null;
 };
 
 export type AccountDetail = Account & {
   password?: string | null;
+  token_expired_at?: string | null;
+  token_issued_at?: string | null;
+  mail_provider?: string | null;
+  mail_provider_ref?: string | null;
+  has_mail_token?: boolean;
 };
 
 type AccountListResponse = {

@@ -222,6 +222,33 @@ export function AccountDetailDialog({ accessToken, open, onOpenChange }: Account
             </section>
 
             <section className="space-y-1">
+              <div className="mb-1 text-xs font-medium uppercase tracking-wide text-stone-400">
+                邮箱 & Token
+              </div>
+              <div className="rounded-xl border border-stone-100 bg-white px-3 py-2">
+                {detail.mail_provider ? (
+                  <DetailRow label="邮箱渠道" value={detail.mail_provider} />
+                ) : null}
+                {detail.mail_provider_ref ? (
+                  <DetailRow label="渠道引用" value={detail.mail_provider_ref} />
+                ) : null}
+                <DetailRow
+                  label="接码 Token"
+                  value={detail.has_mail_token ? "已存储" : "无"}
+                />
+                {detail.token_issued_at ? (
+                  <DetailRow label="Token 签发时间" value={detail.token_issued_at} />
+                ) : null}
+                {detail.token_expired_at ? (
+                  <DetailRow label="Token 到期时间" value={detail.token_expired_at} />
+                ) : null}
+                {detail.status === "异常" && detail.status_reason ? (
+                  <DetailRow label="异常原因" value={detail.status_reason} />
+                ) : null}
+              </div>
+            </section>
+
+            <section className="space-y-1">
               <div className="mb-1 flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-rose-500">
                 凭据 (敏感信息)
               </div>

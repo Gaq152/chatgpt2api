@@ -747,6 +747,7 @@ function AccountsPageContent() {
                           <Badge
                             variant={status.badge}
                             className="inline-flex items-center gap-1 rounded-md px-2 py-1"
+                            title={account.status === "异常" && account.status_reason ? account.status_reason : undefined}
                           >
                             <StatusIcon className="size-3.5" />
                             {account.status}
