@@ -423,8 +423,8 @@ async function maybeMigrate(subjectId: string): Promise<void> {
     });
 
     await migrateServerImageConversations(serverItems);
+    await imageConversationStorage.removeItem("items");
   } catch {
-    // migration failed — will retry next time
     return;
   }
 

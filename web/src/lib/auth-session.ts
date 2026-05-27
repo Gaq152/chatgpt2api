@@ -11,7 +11,7 @@ export async function getValidatedAuthSession(): Promise<StoredAuthSession | nul
 
   try {
     const data = await login(storedSession.key);
-    if (storedSession.version && data.version && storedSession.version !== data.version) {
+    if (data.version && storedSession.version !== data.version) {
       await clearStoredAuthSession();
       return null;
     }

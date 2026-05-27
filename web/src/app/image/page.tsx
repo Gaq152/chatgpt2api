@@ -843,12 +843,15 @@ function ImagePageContent({ isAdmin, subjectId }: { isAdmin: boolean; subjectId:
     async (conversationId: string, image: StoredImage | StoredReferenceImage) => {
       try {
         const nextReference =
-          "dataUrl" in image
+          "dataUrl" in image && image.dataUrl
             ? {
                 referenceImage: image,
                 file: dataUrlToFile(image.dataUrl, image.name, image.type),
               }
-            : await buildReferenceImageFromStoredImage(image, `conversation-${conversationId}-${Date.now()}.png`);
+            : await buildReferenceImageFromStoredImage(
+                "dataUrl" in image ? { ...image, id: image.name, status: "success" as const } : image,
+                `conversation-${conversationId}-${Date.now()}.png`,
+              );
         if (!nextReference) {
           return;
         }
@@ -880,9 +883,14 @@ function ImagePageContent({ isAdmin, subjectId }: { isAdmin: boolean; subjectId:
     setImageCount(String(Math.max(1, turn.count || turn.images.length || 1)));
     setImageSize(turn.size);
     setReferenceImages(turn.referenceImages);
-    setReferenceImageFiles(
-      turn.referenceImages.map((image) => dataUrlToFile(image.dataUrl, image.name, image.type)),
+    const files = await Promise.all(
+      turn.referenceImages.map(async (image) => {
+        if (image.dataUrl) return dataUrlToFile(image.dataUrl, image.name, image.type);
+        if (image.url) return fetchImageAsFile(image.url, image.name);
+        return new File([], image.name, { type: image.type || "image/png" });
+      }),
     );
+    setReferenceImageFiles(files);
     if (fileInputRef.current) {
       fileInputRef.current.value = "";
     }
@@ -987,8 +995,13 @@ function ImagePageContent({ isAdmin, subjectId }: { isAdmin: boolean; subjectId:
           };
         });
 
-        const referenceFiles = activeTurn.referenceImages.map((image, index) =>
-          dataUrlToFile(image.dataUrl, image.name || `${activeTurn.id}-${index + 1}.png`, image.type),
+        const referenceFiles = await Promise.all(
+          activeTurn.referenceImages.map(async (image, index) => {
+            const name = image.name || `${activeTurn.id}-${index + 1}.png`;
+            if (image.dataUrl) return dataUrlToFile(image.dataUrl, name, image.type);
+            if (image.url) return fetchImageAsFile(image.url, name);
+            return new File([], name, { type: image.type || "image/png" });
+          }),
         );
         if (activeTurn.mode === "edit" && referenceFiles.length === 0) {
           throw new Error("未找到可用于继续编辑的参考图");
@@ -1263,6 +1276,7 @@ function ImagePageContent({ isAdmin, subjectId }: { isAdmin: boolean; subjectId:
                 <History className="size-5" />
                 历史记录
               </DialogTitle>
+              <DialogDescription className="sr-only">图片生成历史会话列表</DialogDescription>
             </DialogHeader>
             <div className="min-h-0 flex-1 overflow-y-auto px-5 pb-8 sm:px-8">
               <ImageSidebar
