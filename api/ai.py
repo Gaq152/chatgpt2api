@@ -18,6 +18,17 @@ from services.protocol import (
 )
 
 
+def _save_input_images(images: list[tuple[bytes, str, str]], base_url: str | None) -> list[str]:
+    from services.protocol.conversation import save_image_bytes
+    urls: list[str] = []
+    for data, _filename, _mime in images:
+        try:
+            urls.append(save_image_bytes(data, base_url, prefix="input"))
+        except Exception:
+            pass
+    return urls
+
+
 class ImageGenerationRequest(BaseModel):
     prompt: str = Field(..., min_length=1)
     model: str = "gpt-image-2"
@@ -100,8 +111,11 @@ def create_router() -> APIRouter:
         model = str(payload["model"])
         call = LoggedCall(identity, "/v1/images/edits", model, "图生图", request_text=prompt)
         await filter_or_log(call, prompt)
-        payload["images"] = await read_image_sources(image_sources)
-        payload["base_url"] = resolve_image_base_url(request)
+        resolved_images = await read_image_sources(image_sources)
+        base_url = resolve_image_base_url(request)
+        payload["images"] = resolved_images
+        payload["base_url"] = base_url
+        call.input_image_urls = await run_in_threadpool(_save_input_images, resolved_images, base_url)
         return await call.run(openai_v1_image_edit.handle, payload)
 
     @router.post("/v1/chat/completions")

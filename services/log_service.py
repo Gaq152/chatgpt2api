@@ -194,6 +194,7 @@ class LoggedCall:
     summary: str
     started: float = field(default_factory=time.time)
     request_text: str = ""
+    input_image_urls: list[str] = field(default_factory=list)
 
     def _consume_user_quota(self) -> None:
         """成功 / 用户自身原因失败时扣减用户密钥的 24h 配额。
@@ -286,6 +287,8 @@ class LoggedCall:
             detail["request_text"] = request_excerpt
         if error:
             detail["error"] = error
+        if self.input_image_urls:
+            detail["input_image_urls"] = list(self.input_image_urls)
         collected_urls = [*(urls or []), *_collect_urls(result)]
         if collected_urls:
             detail["urls"] = list(dict.fromkeys(collected_urls))

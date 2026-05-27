@@ -43,6 +43,11 @@ function getUrls(item: SystemLog | null) {
   return Array.isArray(urls) ? urls.filter((url): url is string => typeof url === "string") : [];
 }
 
+function getInputImageUrls(item: SystemLog | null) {
+  const urls = item?.detail?.input_image_urls;
+  return Array.isArray(urls) ? urls.filter((url): url is string => typeof url === "string") : [];
+}
+
 function getStatus(item: SystemLog) {
   const status = item.detail?.status;
   if (status === "success") return "成功";
@@ -65,7 +70,9 @@ function LogsContent() {
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [deletingItems, setDeletingItems] = useState<SystemLog[]>([]);
   const detailUrls = getUrls(detailLog);
-  const detailImages = detailUrls.map((url, index) => ({ id: `${index}`, src: url }));
+  const detailInputUrls = getInputImageUrls(detailLog);
+  const allDetailUrls = [...detailInputUrls, ...detailUrls];
+  const detailImages = allDetailUrls.map((url, index) => ({ id: `${index}`, src: url }));
   const isCallLog = type === LogType.Call;
   const pageSize = 10;
   const pageCount = Math.max(1, Math.ceil(items.length / pageSize));
@@ -207,6 +214,8 @@ function LogsContent() {
               <TableBody>
                 {currentRows.map((item) => {
                   const urls = getUrls(item);
+                  const inputUrls = getInputImageUrls(item);
+                  const allUrls = [...inputUrls, ...urls];
                   return (
                     <TableRow key={item.id} className="text-stone-600">
                       <TableCell>
@@ -225,20 +234,20 @@ function LogsContent() {
                       ) : null}
                       {isCallLog ? (
                         <TableCell>
-                          {urls.length ? (
+                          {allUrls.length ? (
                             <div className="flex items-center gap-1.5">
-                              {urls.slice(0, 3).map((url, imageIndex) => (
+                              {allUrls.slice(0, 4).map((url, imageIndex) => (
                                 <button
                                   key={`${url}-${imageIndex}`}
                                   type="button"
-                                  className="relative size-9 overflow-hidden rounded-lg border border-stone-200 bg-stone-100"
+                                  className={`relative size-9 overflow-hidden rounded-lg border bg-stone-100 ${imageIndex < inputUrls.length ? "border-blue-300" : "border-stone-200"}`}
                                   onClick={() => openLogImage(item, imageIndex)}
-                                  title="预览图片"
+                                  title={imageIndex < inputUrls.length ? "输入图片" : "输出图片"}
                                 >
                                   <ImageThumbnail src={url} thumbnailSrc={getImageThumbnailUrl(url)} className="h-full w-full" />
                                 </button>
                               ))}
-                              {urls.length > 3 ? <span className="text-xs text-stone-400">+{urls.length - 3}</span> : null}
+                              {allUrls.length > 4 ? <span className="text-xs text-stone-400">+{allUrls.length - 4}</span> : null}
                             </div>
                           ) : (
                             <span className="inline-flex items-center gap-1 text-xs text-stone-400">
@@ -286,7 +295,7 @@ function LogsContent() {
             <div className="space-y-4">
               <div className="grid gap-3 rounded-xl border border-stone-200 bg-white p-4 text-sm text-stone-600 md:grid-cols-2">
                 {Object.entries(detailLog?.detail || {})
-                  .filter(([key, value]) => key !== "urls" && typeof value !== "object")
+                  .filter(([key, value]) => key !== "urls" && key !== "input_image_urls" && typeof value !== "object")
                   .map(([key, value]) => {
                     const isTimeField = key === "started_at" || key === "ended_at";
                     const display = isTimeField ? formatTime(String(value), { withSeconds: true }) : String(value);
@@ -298,21 +307,44 @@ function LogsContent() {
                     );
                   })}
               </div>
+              {detailInputUrls.length ? (
+                <div>
+                  <h4 className="mb-2 text-xs font-medium text-stone-400">输入图片</h4>
+                  <div className="grid gap-3 sm:grid-cols-2 md:grid-cols-3">
+                    {detailInputUrls.map((url, index) => (
+                      <button
+                        key={url}
+                        type="button"
+                        className="aspect-square overflow-hidden rounded-xl border border-blue-200 bg-stone-100"
+                        onClick={() => {
+                          setLightboxIndex(index);
+                          setLightboxOpen(true);
+                        }}
+                      >
+                        <img src={url} alt="" className="h-full w-full object-cover" />
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
               {detailUrls.length ? (
-                <div className="grid gap-3 sm:grid-cols-2 md:grid-cols-3">
-                  {detailUrls.map((url, index) => (
-                    <button
-                      key={url}
-                      type="button"
-                      className="aspect-square overflow-hidden rounded-xl border border-stone-200 bg-stone-100"
-                      onClick={() => {
-                        setLightboxIndex(index);
-                        setLightboxOpen(true);
-                      }}
-                    >
-                      <img src={url} alt="" className="h-full w-full object-cover" />
-                    </button>
-                  ))}
+                <div>
+                  {detailInputUrls.length ? <h4 className="mb-2 text-xs font-medium text-stone-400">输出图片</h4> : null}
+                  <div className="grid gap-3 sm:grid-cols-2 md:grid-cols-3">
+                    {detailUrls.map((url, index) => (
+                      <button
+                        key={url}
+                        type="button"
+                        className="aspect-square overflow-hidden rounded-xl border border-stone-200 bg-stone-100"
+                        onClick={() => {
+                          setLightboxIndex(detailInputUrls.length + index);
+                          setLightboxOpen(true);
+                        }}
+                      >
+                        <img src={url} alt="" className="h-full w-full object-cover" />
+                      </button>
+                    ))}
+                  </div>
                 </div>
               ) : null}
               <pre className="max-h-[72vh] overflow-auto rounded-xl border border-stone-200 bg-stone-50 p-4 text-xs leading-6 text-stone-700">

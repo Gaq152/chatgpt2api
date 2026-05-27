@@ -233,7 +233,15 @@ class ImageTaskService:
         # - 其他用户原因失败（HTTPException 等）→ 扣 1（按"用户配额"理解，不让违规请求免费重试）
         # 失败路径在 except 里按异常类型决定。
         from fastapi import HTTPException
-        from services.protocol.conversation import ImageGenerationError
+        from services.protocol.conversation import ImageGenerationError, save_image_bytes
+
+        input_image_urls: list[str] = []
+        if mode == "edit":
+            for data, _fn, _mt in (payload.get("images") or []):
+                try:
+                    input_image_urls.append(save_image_bytes(data, payload.get("base_url"), prefix="input"))
+                except Exception:
+                    pass
 
         try:
             handler = self.edit_handler if mode == "edit" else self.generation_handler
@@ -259,6 +267,7 @@ class ImageTaskService:
                 "调用完成",
                 request_preview=request_text(payload.get("prompt")),
                 urls=_collect_image_urls(data),
+                input_image_urls=input_image_urls,
             )
         except ImageGenerationError as exc:
             # 上游 / 账号池问题（含 content_policy_violation 也归到这里），不扣
@@ -268,6 +277,7 @@ class ImageTaskService:
                 identity, mode, model, started, "调用失败",
                 request_preview=request_text(payload.get("prompt")),
                 status="failed", error=error_message,
+                input_image_urls=input_image_urls,
             )
         except HTTPException as exc:
             # 用户输入相关失败（敏感词等），与 LoggedCall 同步扣 1
@@ -278,6 +288,7 @@ class ImageTaskService:
                 identity, mode, model, started, "调用失败",
                 request_preview=request_text(payload.get("prompt")),
                 status="failed", error=error_message,
+                input_image_urls=input_image_urls,
             )
         except Exception as exc:
             # 兜底失败（含 data 为空抛的 RuntimeError），不扣
@@ -287,6 +298,7 @@ class ImageTaskService:
                 identity, mode, model, started, "调用失败",
                 request_preview=request_text(payload.get("prompt")),
                 status="failed", error=error_message,
+                input_image_urls=input_image_urls,
             )
 
     @staticmethod
@@ -317,6 +329,7 @@ class ImageTaskService:
         status: str = "success",
         error: str = "",
         urls: list[str] | None = None,
+        input_image_urls: list[str] | None = None,
     ) -> None:
         endpoint = "/v1/images/edits" if mode == "edit" else "/v1/images/generations"
         summary_prefix = "图生图" if mode == "edit" else "文生图"
@@ -335,6 +348,8 @@ class ImageTaskService:
             detail["request_text"] = request_preview
         if error:
             detail["error"] = error
+        if input_image_urls:
+            detail["input_image_urls"] = list(input_image_urls)
         if urls:
             detail["urls"] = list(dict.fromkeys(urls))
         try:

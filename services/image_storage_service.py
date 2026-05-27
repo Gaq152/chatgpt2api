@@ -196,15 +196,18 @@ class ImageStorageService:
             return f"{public_base_url.rstrip('/')}/{_safe_relative_path(rel)}"
         return f"{(base_url or config.base_url).rstrip('/')}/images/{_safe_relative_path(rel)}"
 
-    def make_relative_path(self, image_data: bytes) -> str:
+    def make_relative_path(self, image_data: bytes, prefix: str = "") -> str:
         file_hash = hashlib.md5(image_data).hexdigest()
         filename = f"{int(time.time())}_{file_hash}.png"
         relative_dir = Path(time.strftime("%Y"), time.strftime("%m"), time.strftime("%d"))
-        return f"{relative_dir.as_posix()}/{filename}"
+        rel = f"{relative_dir.as_posix()}/{filename}"
+        if prefix:
+            rel = f"{prefix}/{rel}"
+        return rel
 
-    def save(self, image_data: bytes, base_url: str | None = None) -> StoredImage:
+    def save(self, image_data: bytes, base_url: str | None = None, prefix: str = "") -> StoredImage:
         config.cleanup_old_images()
-        rel = self.make_relative_path(image_data)
+        rel = self.make_relative_path(image_data, prefix)
         mode = self.mode()
         if mode not in {"local", "webdav", "both"}:
             mode = "local"
@@ -277,6 +280,8 @@ class ImageStorageService:
                 if not path.is_file() or not _is_image_rel(path.name):
                     continue
                 rel = path.relative_to(root).as_posix()
+                if rel.startswith("input/"):
+                    continue
                 if rel in indexed:
                     continue
                 dimensions = None
@@ -300,6 +305,8 @@ class ImageStorageService:
 
             items: list[dict[str, object]] = []
             for rel, item in list(indexed.items()):
+                if rel.startswith("input/"):
+                    continue
                 if not _is_image_rel(rel):
                     indexed.pop(rel, None)
                     changed = True

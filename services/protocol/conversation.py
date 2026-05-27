@@ -67,8 +67,8 @@ def encode_images(images: Iterable[tuple[bytes, str, str]]) -> list[str]:
     return [base64.b64encode(data).decode("ascii") for data, _, _ in images if data]
 
 
-def save_image_bytes(image_data: bytes, base_url: str | None = None) -> str:
-    return image_storage_service.save(image_data, base_url).url
+def save_image_bytes(image_data: bytes, base_url: str | None = None, prefix: str = "") -> str:
+    return image_storage_service.save(image_data, base_url, prefix=prefix).url
 
 
 def message_text(content: Any) -> str:
