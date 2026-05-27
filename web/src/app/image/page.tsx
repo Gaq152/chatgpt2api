@@ -31,6 +31,7 @@ import {
   clearImageConversations,
   deleteImageConversation,
   getImageConversationStats,
+  initImageConversations,
   listImageConversations,
   renameImageConversation,
   saveImageConversation,
@@ -43,7 +44,7 @@ import {
   type StoredReferenceImage,
 } from "@/store/image-conversations";
 
-const ACTIVE_CONVERSATION_STORAGE_KEY = "chatgpt2api:image_active_conversation_id";
+const ACTIVE_CONVERSATION_STORAGE_KEY_PREFIX = "chatgpt2api:image_active_conversation_id";
 const IMAGE_SIZE_STORAGE_KEY = "chatgpt2api:image_last_size";
 const IMAGE_COUNT_STORAGE_KEY = "chatgpt2api:image_last_count";
 const SCROLL_TO_LATEST_THRESHOLD = 160;
@@ -345,7 +346,7 @@ async function recoverConversationHistory(items: ImageConversation[]) {
 }
 
 
-function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
+function ImagePageContent({ isAdmin, subjectId }: { isAdmin: boolean; subjectId: string }) {
   const didLoadQuotaRef = useRef(false);
   const conversationsRef = useRef<ImageConversation[]>([]);
   const resultsViewportRef = useRef<HTMLDivElement>(null);
@@ -467,7 +468,7 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
         setImageSize(storedSize || "");
         setImageCount(storedCount ? clampImageCount(storedCount) : "1");
 
-        const items = await listImageConversations();
+        const items = await initImageConversations(subjectId);
         const normalizedItems = await recoverConversationHistory(items);
         if (cancelled) {
           return;
@@ -475,8 +476,9 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
 
         conversationsRef.current = normalizedItems;
         setConversations(normalizedItems);
+        const activeConversationKey = `${ACTIVE_CONVERSATION_STORAGE_KEY_PREFIX}:${subjectId}`;
         const storedConversationId =
-          typeof window !== "undefined" ? window.localStorage.getItem(ACTIVE_CONVERSATION_STORAGE_KEY) : null;
+          typeof window !== "undefined" ? window.localStorage.getItem(activeConversationKey) : null;
         const nextSelectedConversationId =
           (storedConversationId && normalizedItems.some((conversation) => conversation.id === storedConversationId)
             ? storedConversationId
@@ -496,7 +498,7 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [subjectId]);
 
   const loadQuota = useCallback(async () => {
     if (isAdmin) {
@@ -584,12 +586,13 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
       return;
     }
 
+    const activeConversationKey = `${ACTIVE_CONVERSATION_STORAGE_KEY_PREFIX}:${subjectId}`;
     if (selectedConversationId) {
-      window.localStorage.setItem(ACTIVE_CONVERSATION_STORAGE_KEY, selectedConversationId);
+      window.localStorage.setItem(activeConversationKey, selectedConversationId);
     } else {
-      window.localStorage.removeItem(ACTIVE_CONVERSATION_STORAGE_KEY);
+      window.localStorage.removeItem(activeConversationKey);
     }
-  }, [selectedConversationId]);
+  }, [selectedConversationId, subjectId]);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -927,6 +930,7 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
       activeConversationQueueIds.add(conversationId);
       const applyTasks = async (tasks: ImageTask[]) => {
         const taskMap = new Map(tasks.map((task) => [task.id, task]));
+        const inputImageUrls = tasks.flatMap((task) => task.input_image_urls || []);
         await updateConversation(conversationId, (current) => {
           const conversation = current ?? snapshot;
           const turns = conversation.turns.map((turn) => {
@@ -939,10 +943,19 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
               return task ? taskDataToStoredImage({ ...image, taskId }, task) : image;
             });
             const derived = deriveTurnStatus({ ...turn, status: "generating", images });
+            let referenceImages = turn.referenceImages;
+            if (inputImageUrls.length > 0 && turn.mode === "edit") {
+              referenceImages = turn.referenceImages.map((ref, idx) => {
+                if (ref.url) return ref;
+                const serverUrl = inputImageUrls[idx];
+                return serverUrl ? { ...ref, url: serverUrl } : ref;
+              });
+            }
             return {
               ...turn,
               ...derived,
               images,
+              referenceImages,
             };
           });
           return {
@@ -1398,5 +1411,5 @@ export default function ImagePage() {
     );
   }
 
-  return <ImagePageContent isAdmin={session.role === "admin"} />;
+  return <ImagePageContent isAdmin={session.role === "admin"} subjectId={session.subjectId} />;
 }

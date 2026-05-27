@@ -34,6 +34,7 @@ export default function LoginPage() {
         role: data.role,
         subjectId: data.subject_id,
         name: data.name,
+        version: data.version,
       });
       router.replace(getDefaultRouteForRole(data.role));
     } catch (error) {

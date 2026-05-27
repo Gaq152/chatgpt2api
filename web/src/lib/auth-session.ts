@@ -11,11 +11,16 @@ export async function getValidatedAuthSession(): Promise<StoredAuthSession | nul
 
   try {
     const data = await login(storedSession.key);
+    if (storedSession.version && data.version && storedSession.version !== data.version) {
+      await clearStoredAuthSession();
+      return null;
+    }
     const nextSession: StoredAuthSession = {
       key: storedSession.key,
       role: data.role,
       subjectId: data.subject_id,
       name: data.name,
+      version: data.version,
     };
     await setStoredAuthSession(nextSession);
     return nextSession;

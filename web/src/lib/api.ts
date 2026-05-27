@@ -231,6 +231,7 @@ export type ImageTask = {
   updated_at: string;
   data?: Array<{ b64_json?: string; url?: string; revised_prompt?: string }>;
   error?: string;
+  input_image_urls?: string[];
 };
 
 type ImageTaskListResponse = {
@@ -881,5 +882,103 @@ export async function testProxy(url?: string) {
   return httpRequest<{ result: ProxyTestResult }>("/api/proxy/test", {
     method: "POST",
     body: { url: url ?? "" },
+  });
+}
+
+// --- Image Conversations (server-side storage) ---
+
+export type ServerReferenceImage = {
+  name: string;
+  type: string;
+  url: string;
+};
+
+export type ServerStoredImage = {
+  id: string;
+  task_id?: string;
+  status?: "loading" | "success" | "error";
+  url?: string;
+  revised_prompt?: string;
+  error?: string;
+};
+
+export type ServerImageTurn = {
+  id: string;
+  prompt: string;
+  model: string;
+  mode: "generate" | "edit";
+  reference_images: ServerReferenceImage[];
+  count: number;
+  size: string;
+  images: ServerStoredImage[];
+  created_at: string;
+  status: "queued" | "generating" | "success" | "error";
+  error?: string;
+  prompt_deleted?: boolean;
+  results_deleted?: boolean;
+};
+
+export type ServerImageConversation = {
+  id: string;
+  title: string;
+  created_at: string;
+  updated_at: string;
+  turns: ServerImageTurn[];
+};
+
+export async function fetchServerImageConversations(since?: string) {
+  const params = new URLSearchParams();
+  if (since) {
+    params.set("since", since);
+  }
+  return httpRequest<{ items: ServerImageConversation[] }>(
+    `/api/image-conversations${params.toString() ? `?${params.toString()}` : ""}`,
+  );
+}
+
+export async function fetchServerImageConversation(id: string) {
+  return httpRequest<ServerImageConversation>(`/api/image-conversations/${encodeURIComponent(id)}`);
+}
+
+export async function saveServerImageConversation(conversation: ServerImageConversation) {
+  return httpRequest<ServerImageConversation>("/api/image-conversations", {
+    method: "POST",
+    body: conversation,
+  });
+}
+
+export async function renameServerImageConversation(id: string, title: string) {
+  return httpRequest<ServerImageConversation>(
+    `/api/image-conversations/${encodeURIComponent(id)}/title`,
+    { method: "PATCH", body: { title } },
+  );
+}
+
+export async function deleteServerImageConversation(id: string) {
+  return httpRequest<{ ok: boolean }>(
+    `/api/image-conversations/${encodeURIComponent(id)}`,
+    { method: "DELETE" },
+  );
+}
+
+export async function clearServerImageConversations() {
+  return httpRequest<{ ok: boolean; removed: number }>("/api/image-conversations", {
+    method: "DELETE",
+  });
+}
+
+export async function migrateServerImageConversations(conversations: ServerImageConversation[]) {
+  return httpRequest<{ imported: number; skipped: number }>("/api/image-conversations/migrate", {
+    method: "POST",
+    body: { conversations },
+  });
+}
+
+export async function uploadReferenceImage(file: File) {
+  const formData = new FormData();
+  formData.append("file", file);
+  return httpRequest<{ url: string }>("/api/image-conversations/upload-reference", {
+    method: "POST",
+    body: formData,
   });
 }
