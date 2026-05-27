@@ -162,14 +162,14 @@ class AuthService:
             quota = item.get("quota_24h")
             window_start = item.get("quota_window_start")
             used = int(item.get("quota_used") or 0)
-            public["quota_24h"] = quota
-            public["quota_used"] = used
-            public["quota_window_start"] = window_start
-            reset_at = None
             parsed = _parse_iso(window_start)
-            if parsed is not None:
-                reset_at = (parsed + QUOTA_WINDOW).isoformat()
-            public["quota_reset_at"] = reset_at
+            now = datetime.now(timezone.utc)
+            expired = parsed is None or (now - parsed) >= QUOTA_WINDOW
+            public["quota_24h"] = quota
+            public["quota_used"] = 0 if expired else used
+            public["quota_window_start"] = window_start
+            reset_at = (parsed + QUOTA_WINDOW).isoformat() if parsed is not None else None
+            public["quota_reset_at"] = None if expired else reset_at
         return public
 
     def list_keys(self, role: AuthRole | None = None) -> list[dict[str, object]]:
