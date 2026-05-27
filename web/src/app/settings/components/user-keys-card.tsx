@@ -248,7 +248,7 @@ export function UserKeysCard() {
                           24h 用量 {(item.quota_used ?? 0)}
                           {item.quota_24h != null ? ` / ${item.quota_24h}` : " / 未配置"}
                         </span>
-                        {item.quota_reset_at ? <span>下次刷新 {formatDateTime(item.quota_reset_at)}</span> : null}
+                        <span>下次刷新 {item.quota_reset_at ? formatDateTime(item.quota_reset_at) : "已重置"}</span>
                       </div>
                     </div>
 
