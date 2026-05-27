@@ -639,7 +639,15 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
     if (!silent) set({ isLoadingRegister: true });
     try {
       const data = await fetchRegisterConfig();
-      set({ registerConfig: data.register });
+      const incoming = data.register;
+      if (silent) {
+        const { registerConfig: current } = get();
+        if (current) {
+          set({ registerConfig: { ...current, logs: incoming.logs, stats: incoming.stats, enabled: incoming.enabled } });
+          return;
+        }
+      }
+      set({ registerConfig: incoming });
     } catch (error) {
       if (!silent) toast.error(error instanceof Error ? error.message : "加载注册配置失败");
     } finally {
