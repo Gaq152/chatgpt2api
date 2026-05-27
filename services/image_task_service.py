@@ -79,6 +79,8 @@ def _public_task(task: dict[str, Any]) -> dict[str, Any]:
         item["data"] = task.get("data")
     if task.get("error"):
         item["error"] = task.get("error")
+    if task.get("input_image_urls"):
+        item["input_image_urls"] = task.get("input_image_urls")
     return item
 
 
@@ -257,7 +259,10 @@ class ImageTaskService:
                     message = "号池中没有可用账号或所有账号均被限流，请检查号池状态（账号额度、是否被封禁、是否到达生图上限)"
                 # data 空说明号池/上游兜底，不扣配额
                 raise RuntimeError(message)
-            self._update_task(key, status=TASK_STATUS_SUCCESS, data=data, error="")
+            updates: dict[str, Any] = {"status": TASK_STATUS_SUCCESS, "data": data, "error": ""}
+            if input_image_urls:
+                updates["input_image_urls"] = input_image_urls
+            self._update_task(key, **updates)
             self._consume_user_quota(identity)
             self._log_call(
                 identity,
