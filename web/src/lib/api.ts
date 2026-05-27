@@ -670,6 +670,22 @@ export async function resetRegister() {
   return httpRequest<{ register: RegisterConfig }>("/api/register/reset", { method: "POST" });
 }
 
+export type BlockedDomain = {
+  domain: string;
+  reason?: string;
+  blocked_at?: string;
+};
+
+export async function fetchBlockedDomains() {
+  return httpRequest<{ domains: BlockedDomain[] }>("/api/register/blocked-domains");
+}
+
+export async function removeBlockedDomain(domain: string) {
+  return httpRequest<{ removed: boolean; domain: string }>(`/api/register/blocked-domains/${encodeURIComponent(domain)}`, {
+    method: "DELETE",
+  });
+}
+
 // ── CPA (CLIProxyAPI) ──────────────────────────────────────────────
 
 export type CPAPool = {

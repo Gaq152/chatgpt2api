@@ -1,6 +1,7 @@
 "use client";
 
-import { AlertTriangle, LoaderCircle, Plus, Play, RotateCcw, Save, Square, Trash2, UserPlus } from "lucide-react";
+import { useCallback, useEffect, useState } from "react";
+import { AlertTriangle, Ban, LoaderCircle, Plus, Play, RotateCcw, Save, Square, Trash2, UserPlus, X } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -9,6 +10,8 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { formatTimeOnly } from "@/lib/format-time";
+import type { BlockedDomain } from "@/lib/api";
+import { fetchBlockedDomains, removeBlockedDomain } from "@/lib/api";
 
 import { useSettingsStore } from "../../settings/store";
 
@@ -30,6 +33,24 @@ export function RegisterCard() {
   const save = useSettingsStore((state) => state.saveRegister);
   const toggle = useSettingsStore((state) => state.toggleRegister);
   const reset = useSettingsStore((state) => state.resetRegister);
+
+  const [blockedDomains, setBlockedDomains] = useState<BlockedDomain[]>([]);
+  const [blockedLoading, setBlockedLoading] = useState(false);
+  const loadBlockedDomains = useCallback(async () => {
+    setBlockedLoading(true);
+    try {
+      const res = await fetchBlockedDomains();
+      setBlockedDomains(res.domains || []);
+    } catch { /* ignore */ }
+    setBlockedLoading(false);
+  }, []);
+  useEffect(() => { void loadBlockedDomains(); }, [loadBlockedDomains]);
+  const handleRemoveDomain = async (domain: string) => {
+    try {
+      await removeBlockedDomain(domain);
+      setBlockedDomains((prev) => prev.filter((d) => d.domain !== domain));
+    } catch { /* ignore */ }
+  };
 
   if (isLoading) {
     return (
@@ -278,6 +299,36 @@ export function RegisterCard() {
               })}
             </div>
           </div>
+
+          {blockedDomains.length > 0 && (
+            <div className="space-y-3 border-t border-stone-200 pt-3">
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2">
+                  <Ban className="size-4 text-stone-500" />
+                  <h3 className="text-sm font-semibold text-stone-800">被封域名黑名单</h3>
+                  <Badge variant="secondary" className="rounded-md">{blockedDomains.length}</Badge>
+                </div>
+              </div>
+              <div className="space-y-1">
+                {blockedDomains.map((item) => (
+                  <div key={item.domain} className="flex items-center justify-between gap-2 rounded-lg border border-stone-200 bg-white/70 px-3 py-1.5 text-xs">
+                    <div className="flex items-center gap-2 overflow-hidden">
+                      <span className="font-mono font-medium text-stone-800 truncate">{item.domain}</span>
+                      {item.reason && <span className="text-stone-400 truncate" title={item.reason}>{item.reason}</span>}
+                    </div>
+                    <button
+                      type="button"
+                      className="shrink-0 rounded p-1 text-stone-400 transition hover:bg-rose-50 hover:text-rose-500"
+                      onClick={() => void handleRemoveDomain(item.domain)}
+                      title="移除"
+                    >
+                      <X className="size-3.5" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
       </section>
 

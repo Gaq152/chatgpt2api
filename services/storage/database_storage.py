@@ -30,6 +30,15 @@ class AuthKeyModel(Base):
     data = Column(Text, nullable=False)
 
 
+class BlockedDomainModel(Base):
+    """被封禁的邮箱域名"""
+    __tablename__ = "blocked_domains"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    domain = Column(String(255), unique=True, nullable=False, index=True)
+    data = Column(Text, nullable=False)
+
+
 class DatabaseStorageBackend(StorageBackend):
     """数据库存储后端（支持 SQLite、PostgreSQL、MySQL 等）"""
 
@@ -90,7 +99,7 @@ class DatabaseStorageBackend(StorageBackend):
 
     def _save_rows(
         self,
-        model: type[AccountModel] | type[AuthKeyModel],
+        model: type[AccountModel] | type[AuthKeyModel] | type[BlockedDomainModel],
         items: list[dict[str, Any]],
         source_key: str,
         target_key: str | None = None,
@@ -116,6 +125,12 @@ class DatabaseStorageBackend(StorageBackend):
             raise e
         finally:
             session.close()
+
+    def load_blocked_domains(self) -> list[dict[str, Any]]:
+        return self._load_rows(BlockedDomainModel)
+
+    def save_blocked_domains(self, domains: list[dict[str, Any]]) -> None:
+        self._save_rows(BlockedDomainModel, domains, "domain", "domain")
 
     def health_check(self) -> dict[str, Any]:
         """健康检查"""

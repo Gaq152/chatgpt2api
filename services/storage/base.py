@@ -27,6 +27,14 @@ class StorageBackend(ABC):
         """保存所有鉴权密钥数据"""
         pass
 
+    def load_blocked_domains(self) -> list[dict[str, Any]]:
+        """加载被封禁的邮箱域名列表"""
+        return []
+
+    def save_blocked_domains(self, domains: list[dict[str, Any]]) -> None:
+        """保存被封禁的邮箱域名列表"""
+        pass
+
     @abstractmethod
     def health_check(self) -> dict[str, Any]:
         """健康检查，返回存储后端状态"""

@@ -13,6 +13,7 @@ class JSONStorageBackend(StorageBackend):
     def __init__(self, file_path: Path, auth_keys_path: Path | None = None):
         self.file_path = file_path
         self.auth_keys_path = auth_keys_path or file_path.with_name("auth_keys.json")
+        self.blocked_domains_path = file_path.with_name("blocked_domains.json")
         self.file_path.parent.mkdir(parents=True, exist_ok=True)
         self.auth_keys_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -61,6 +62,12 @@ class JSONStorageBackend(StorageBackend):
             json.dumps({"items": auth_keys}, ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",
         )
+
+    def load_blocked_domains(self) -> list[dict[str, Any]]:
+        return self._load_json_list(self.blocked_domains_path)
+
+    def save_blocked_domains(self, domains: list[dict[str, Any]]) -> None:
+        self._save_json_list(self.blocked_domains_path, domains)
 
     def health_check(self) -> dict[str, Any]:
         """健康检查"""

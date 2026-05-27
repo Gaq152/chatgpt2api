@@ -50,6 +50,19 @@ def create_router() -> APIRouter:
         require_admin(authorization)
         return {"register": register_service.reset()}
 
+    @router.get("/api/register/blocked-domains")
+    async def get_blocked_domains(authorization: str | None = Header(default=None)):
+        require_admin(authorization)
+        from services.register.openai_register import list_blocked_domains
+        return {"domains": list_blocked_domains()}
+
+    @router.delete("/api/register/blocked-domains/{domain}")
+    async def remove_blocked_domain(domain: str, authorization: str | None = Header(default=None)):
+        require_admin(authorization)
+        from services.register.openai_register import remove_blocked_domain
+        removed = remove_blocked_domain(domain)
+        return {"removed": removed, "domain": domain}
+
     @router.get("/api/register/events")
     async def register_events(token: str = ""):
         require_admin(f"Bearer {token}")
