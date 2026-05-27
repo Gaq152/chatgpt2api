@@ -15,6 +15,20 @@ from services.config import config
 from services.image_service import start_image_cleanup_scheduler
 
 
+def _cleanup_orphaned_conversations() -> None:
+    from services.auth_service import auth_service
+    from services.image_conversation_service import image_conversation_service
+
+    all_keys = auth_service.list_keys()
+    valid_ids = {str(k.get("id", "")) for k in all_keys if k.get("id")}
+    if not valid_ids:
+        return
+    removed = image_conversation_service.cleanup_orphaned_owners(valid_ids)
+    if removed > 0:
+        import logging
+        logging.getLogger(__name__).info("清理了 %d 条孤儿会话记录", removed)
+
+
 def create_app() -> FastAPI:
     app_version = config.app_version
 
@@ -25,6 +39,7 @@ def create_app() -> FastAPI:
         cleanup_thread = start_image_cleanup_scheduler(stop_event)
         backup_service.start()
         config.cleanup_old_images()
+        _cleanup_orphaned_conversations()
         try:
             yield
         finally:

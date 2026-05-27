@@ -289,6 +289,20 @@ class ImageConversationService:
                 self._save_throttled(force=True)
             return removed
 
+    def cleanup_orphaned_owners(self, valid_owner_ids: set[str]) -> int:
+        if not valid_owner_ids:
+            return 0
+        with self._lock:
+            before = len(self._items)
+            self._items = [
+                item for item in self._items
+                if item.get("owner_id") in valid_owner_ids
+            ]
+            removed = before - len(self._items)
+            if removed > 0:
+                self._save_throttled(force=True)
+            return removed
+
     def bulk_import(
         self, identity: dict[str, object], conversations: list[dict[str, Any]]
     ) -> dict[str, Any]:
