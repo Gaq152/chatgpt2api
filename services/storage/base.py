@@ -35,6 +35,14 @@ class StorageBackend(ABC):
         """保存被封禁的邮箱域名列表"""
         pass
 
+    def load_image_conversations(self) -> list[dict[str, Any]]:
+        """加载图片会话数据"""
+        return []
+
+    def save_image_conversations(self, conversations: list[dict[str, Any]]) -> None:
+        """保存图片会话数据"""
+        pass
+
     @abstractmethod
     def health_check(self) -> dict[str, Any]:
         """健康检查，返回存储后端状态"""

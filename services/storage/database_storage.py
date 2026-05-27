@@ -39,6 +39,16 @@ class BlockedDomainModel(Base):
     data = Column(Text, nullable=False)
 
 
+class ImageConversationModel(Base):
+    """图片会话数据模型"""
+    __tablename__ = "image_conversations"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    conversation_id = Column(String(255), unique=True, nullable=False, index=True)
+    owner_id = Column(String(255), nullable=False, index=True)
+    data = Column(Text, nullable=False)
+
+
 class DatabaseStorageBackend(StorageBackend):
     """数据库存储后端（支持 SQLite、PostgreSQL、MySQL 等）"""
 
@@ -99,7 +109,7 @@ class DatabaseStorageBackend(StorageBackend):
 
     def _save_rows(
         self,
-        model: type[AccountModel] | type[AuthKeyModel] | type[BlockedDomainModel],
+        model: type[AccountModel] | type[AuthKeyModel] | type[BlockedDomainModel] | type[ImageConversationModel],
         items: list[dict[str, Any]],
         source_key: str,
         target_key: str | None = None,
@@ -131,6 +141,31 @@ class DatabaseStorageBackend(StorageBackend):
 
     def save_blocked_domains(self, domains: list[dict[str, Any]]) -> None:
         self._save_rows(BlockedDomainModel, domains, "domain", "domain")
+
+    def load_image_conversations(self) -> list[dict[str, Any]]:
+        return self._load_rows(ImageConversationModel)
+
+    def save_image_conversations(self, conversations: list[dict[str, Any]]) -> None:
+        session = self.Session()
+        try:
+            session.query(ImageConversationModel).delete()
+            for item in conversations:
+                if not isinstance(item, dict):
+                    continue
+                conv_id = str(item.get("id") or "").strip()
+                if not conv_id:
+                    continue
+                session.add(ImageConversationModel(
+                    conversation_id=conv_id,
+                    owner_id=str(item.get("owner_id") or "").strip(),
+                    data=json.dumps(item, ensure_ascii=False),
+                ))
+            session.commit()
+        except Exception as e:
+            session.rollback()
+            raise e
+        finally:
+            session.close()
 
     def health_check(self) -> dict[str, Any]:
         """健康检查"""

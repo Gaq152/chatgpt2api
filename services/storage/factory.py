@@ -55,7 +55,8 @@ def create_storage_backend(data_dir: Path) -> StorageBackend:
         branch = os.getenv("GIT_BRANCH", "main").strip()
         file_path = os.getenv("GIT_FILE_PATH", "accounts.json").strip()
         auth_keys_file_path = os.getenv("GIT_AUTH_KEYS_FILE_PATH", "auth_keys.json").strip()
-        
+        image_conversations_file_path = os.getenv("GIT_IMAGE_CONVERSATIONS_FILE_PATH", "image_conversations.json").strip()
+
         if not repo_url:
             raise ValueError(
                 "GIT_REPO_URL is required when using git storage backend. "
@@ -71,6 +72,7 @@ def create_storage_backend(data_dir: Path) -> StorageBackend:
             branch=branch,
             file_path=file_path,
             auth_keys_file_path=auth_keys_file_path,
+            image_conversations_file_path=image_conversations_file_path,
             local_cache_dir=cache_dir,
         )
     

@@ -23,6 +23,7 @@ class GitStorageBackend(StorageBackend):
         file_path: str = "accounts.json",
         auth_keys_file_path: str = "auth_keys.json",
         blocked_domains_file_path: str = "blocked_domains.json",
+        image_conversations_file_path: str = "image_conversations.json",
         local_cache_dir: Path | None = None,
     ):
         self.repo_url = repo_url
@@ -31,6 +32,7 @@ class GitStorageBackend(StorageBackend):
         self.file_path = file_path
         self.auth_keys_file_path = auth_keys_file_path
         self.blocked_domains_file_path = blocked_domains_file_path
+        self.image_conversations_file_path = image_conversations_file_path
         
         # 本地缓存目录
         if local_cache_dir is None:
@@ -131,6 +133,20 @@ class GitStorageBackend(StorageBackend):
             self._save_json_file(self.blocked_domains_file_path, domains, "Update blocked domains")
         except Exception as e:
             print(f"[git-storage] save blocked domains failed: {e}")
+            raise e
+
+    def load_image_conversations(self) -> list[dict[str, Any]]:
+        try:
+            return self._load_json_file(self.image_conversations_file_path)
+        except Exception as e:
+            print(f"[git-storage] load image conversations failed: {e}")
+            return []
+
+    def save_image_conversations(self, conversations: list[dict[str, Any]]) -> None:
+        try:
+            self._save_json_file(self.image_conversations_file_path, conversations, "Update image conversations")
+        except Exception as e:
+            print(f"[git-storage] save image conversations failed: {e}")
             raise e
 
     def _load_json_file(self, file_path: str) -> list[dict[str, Any]]:
