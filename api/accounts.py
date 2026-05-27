@@ -201,6 +201,8 @@ def create_router() -> APIRouter:
         require_admin(authorization)
         if not auth_service.delete_key(key_id, role="user"):
             raise HTTPException(status_code=404, detail={"error": "这条用户密钥不存在，可能已经被删除"})
+        from services.image_conversation_service import image_conversation_service
+        image_conversation_service.clear_conversations_by_owner(key_id)
         return {"items": auth_service.list_keys(role="user")}
 
     @router.get("/api/accounts")

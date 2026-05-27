@@ -405,7 +405,10 @@ async function maybeMigrate(subjectId: string): Promise<void> {
     }
 
     const normalized = oldItems.map(normalizeConversation);
-    const serverItems: ServerImageConversation[] = normalized.map((conv: ImageConversation) => {
+    const uploaded = await Promise.all(
+      normalized.map((conv: ImageConversation) => uploadPendingReferences(conv)),
+    );
+    const serverItems: ServerImageConversation[] = uploaded.map((conv: ImageConversation) => {
       const stripped: ImageConversation = {
         ...conv,
         turns: conv.turns.map((turn: ImageTurn) => ({

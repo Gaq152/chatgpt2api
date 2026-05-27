@@ -274,6 +274,21 @@ class ImageConversationService:
                 self._save_throttled(force=True)
             return removed
 
+    def clear_conversations_by_owner(self, owner_id: str) -> int:
+        normalized = _clean(owner_id)
+        if not normalized:
+            return 0
+        with self._lock:
+            before = len(self._items)
+            self._items = [
+                item for item in self._items
+                if item.get("owner_id") != normalized
+            ]
+            removed = before - len(self._items)
+            if removed > 0:
+                self._save_throttled(force=True)
+            return removed
+
     def bulk_import(
         self, identity: dict[str, object], conversations: list[dict[str, Any]]
     ) -> dict[str, Any]:
