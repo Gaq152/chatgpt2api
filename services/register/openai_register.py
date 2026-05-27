@@ -24,6 +24,94 @@ from services.account_service import account_service
 from services.register import mail_provider
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+
+class AccountDeactivatedError(RuntimeError):
+    """OpenAI 返回 account_deactivated，账号已被永久封禁。"""
+
+
+_blocked_domains: dict[str, dict] = {}
+_blocked_domains_lock = threading.Lock()
+_blocked_domains_loaded = False
+
+_DOMAIN_BLOCK_KEYWORDS = ("unsupported_email", "not supported", "邮箱域名很可能因滥用被封禁")
+
+
+def _get_storage():
+    from services.config import config as app_config
+    return app_config.get_storage_backend()
+
+
+def _load_blocked_domains() -> None:
+    global _blocked_domains_loaded
+    if _blocked_domains_loaded:
+        return
+    try:
+        storage = _get_storage()
+        items = storage.load_blocked_domains()
+        with _blocked_domains_lock:
+            for item in items:
+                domain = str(item.get("domain") or "").lower().strip()
+                if domain:
+                    _blocked_domains[domain] = item
+            _blocked_domains_loaded = True
+        if _blocked_domains:
+            log(f"已从存储加载 {len(_blocked_domains)} 个被封禁域名", "yellow")
+    except Exception as exc:
+        print(f"[blocked_domains] 加载失败: {exc}")
+
+
+def _persist_blocked_domains() -> None:
+    try:
+        with _blocked_domains_lock:
+            items = list(_blocked_domains.values())
+        _get_storage().save_blocked_domains(items)
+    except Exception as exc:
+        print(f"[blocked_domains] 持久化失败: {exc}")
+
+
+def _block_domain(email: str, reason: str) -> None:
+    domain = email.rsplit("@", 1)[-1].lower() if "@" in email else ""
+    if not domain:
+        return
+    with _blocked_domains_lock:
+        if domain in _blocked_domains:
+            return
+        _blocked_domains[domain] = {
+            "domain": domain,
+            "reason": reason,
+            "blocked_at": datetime.now(timezone.utc).isoformat(),
+        }
+    log(f"域名 {domain} 已加入黑名单: {reason}", "yellow")
+    _persist_blocked_domains()
+
+
+def _is_domain_blocked(email: str) -> bool:
+    _load_blocked_domains()
+    domain = email.rsplit("@", 1)[-1].lower() if "@" in email else ""
+    if not domain:
+        return False
+    with _blocked_domains_lock:
+        return domain in _blocked_domains
+
+
+def remove_blocked_domain(domain: str) -> bool:
+    domain = domain.lower().strip()
+    with _blocked_domains_lock:
+        if domain not in _blocked_domains:
+            return False
+        del _blocked_domains[domain]
+    _persist_blocked_domains()
+    log(f"域名 {domain} 已从黑名单移除", "green")
+    return True
+
+
+def list_blocked_domains() -> list[dict]:
+    _load_blocked_domains()
+    with _blocked_domains_lock:
+        return list(_blocked_domains.values())
+
+
 base_dir = Path(__file__).resolve().parent
 config = {
     "mail": {
@@ -546,7 +634,10 @@ def relogin_for_tokens(email: str, password: str, stored_mailbox: dict | None = 
         log(f"[relogin] {email} 密码重登成功", "green")
         return tokens
     except Exception as exc:
-        log(f"[relogin] {email} 密码重登失败: {exc}", "red")
+        msg = str(exc)
+        log(f"[relogin] {email} 密码重登失败: {msg}", "red")
+        if "account_deactivated" in msg:
+            raise AccountDeactivatedError(msg) from exc
         return None
     finally:
         registrar.close()
@@ -556,6 +647,7 @@ class PlatformRegistrar:
     def __init__(self, proxy: str = "") -> None:
         self.session = create_session(proxy)
         self.device_id = str(uuid.uuid4())
+        self._current_email: str = ""
         self._code_verifier: str = ""
 
     def close(self) -> None:
@@ -612,8 +704,15 @@ class PlatformRegistrar:
         resp, error = request_with_local_retry(self.session, "post", f"{auth_base}/api/accounts/user/register", json={"username": email, "password": password}, headers=headers, verify=False)
         if resp is None or resp.status_code != 200:
             data = _response_json(resp) if resp is not None else {}
-            if data.get("message") == "Failed to create account. Please try again.":
-                step(index, "注册失败提示: 邮箱域名很可能因滥用被封禁，请更换邮箱域名", "yellow")
+            msg = str(data.get("message") or "")
+            err_code = ""
+            if isinstance(data.get("error"), dict):
+                msg = msg or str(data["error"].get("message") or "")
+                err_code = str(data["error"].get("code") or "")
+            combined = f"{msg} {err_code}"
+            if any(kw in combined for kw in _DOMAIN_BLOCK_KEYWORDS) or msg == "Failed to create account. Please try again.":
+                _block_domain(email, msg or err_code)
+                step(index, "注册失败: 邮箱域名已被封禁，已加入黑名单", "yellow")
             detail = f", detail={json.dumps(data, ensure_ascii=False)}" if data else ""
             raise RuntimeError(error or f"user_register_http_{getattr(resp, 'status_code', 'unknown')}{detail}")
         step(index, "提交注册密码完成")
@@ -645,8 +744,15 @@ class PlatformRegistrar:
         resp, error = request_with_local_retry(self.session, "post", f"{auth_base}/api/accounts/create_account", json={"name": name, "birthdate": birthdate}, headers=headers, verify=False)
         if resp is None or resp.status_code not in (200, 302):
             data = _response_json(resp) if resp is not None else {}
-            if data.get("message") == "Failed to create account. Please try again.":
-                step(index, "创建账号失败提示: 邮箱域名很可能因滥用被封禁，请更换邮箱域名", "yellow")
+            msg = str(data.get("message") or "")
+            err_code = ""
+            if isinstance(data.get("error"), dict):
+                msg = msg or str(data["error"].get("message") or "")
+                err_code = str(data["error"].get("code") or "")
+            combined = f"{msg} {err_code}"
+            if any(kw in combined for kw in _DOMAIN_BLOCK_KEYWORDS) or msg == "Failed to create account. Please try again.":
+                _block_domain(self._current_email, msg or err_code)
+                step(index, "创建账号失败: 邮箱域名已被封禁，已加入黑名单", "yellow")
             detail = f", detail={json.dumps(data, ensure_ascii=False)}" if data else ""
             raise RuntimeError(error or f"create_account_http_{getattr(resp, 'status_code', 'unknown')}{detail}")
         step(index, "创建账号资料完成")
@@ -824,6 +930,10 @@ class PlatformRegistrar:
         email = str(mailbox.get("address") or "").strip()
         if not email:
             raise RuntimeError("邮箱服务未返回 address")
+        self._current_email = email
+        if _is_domain_blocked(email):
+            domain = email.rsplit("@", 1)[-1]
+            raise RuntimeError(f"域名 {domain} 已在黑名单中，跳过注册")
         channel = str(mailbox.get("label") or mailbox.get("provider") or "").strip()
         step(index, f"邮箱创建完成[{channel}]({email})")
         password = _random_password()

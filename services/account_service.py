@@ -453,18 +453,20 @@ class AccountService:
             ]
 
     def list_refreshable_tokens(self) -> list[str]:
-        """watcher 定时刷新的候选：除禁用外的全部账号。
+        """watcher 定时刷新的候选：除禁用/封禁外的全部账号。
 
         异常 / 限流 / 正常都会被刷一次，因为按 source 分流后：
         - manual/register 走 OAuth refresh_token 刷三件套
         - sub2api/cpa 走平台重拉
         - 这些动作本身就能恢复异常号、回查限流号、续期正常号
+        已被 OpenAI 永久封禁的账号无法恢复，跳过以节省资源。
         """
         with self._lock:
             return [
                 token
                 for item in self._accounts.values()
                 if item.get("status") != "禁用"
+                   and "account_deactivated" not in str(item.get("status_reason") or "")
                    and (token := item.get("access_token") or "")
             ]
 
@@ -779,7 +781,15 @@ class AccountService:
                     updates["id_token"] = login_tokens["id_token"]
                 return self._swap_access_token(access_token, updates)
         except Exception as exc:
-            print(f"[refresh_accounts] 密码重登异常: {email}: {exc}")
+            from services.register.openai_register import AccountDeactivatedError
+            if isinstance(exc, AccountDeactivatedError):
+                print(f"[refresh_accounts] 账号已被封禁，标记异常: {email}")
+                self.update_account(access_token, {
+                    "status": "异常", "quota": 0,
+                    "status_reason": "账号已被 OpenAI 封禁(account_deactivated)",
+                })
+            else:
+                print(f"[refresh_accounts] 密码重登异常: {email}: {exc}")
         return access_token
 
     def _do_refresh(self, access_token: str, snapshot: dict) -> str:
