@@ -196,6 +196,14 @@ def create_router() -> APIRouter:
             raise HTTPException(status_code=404, detail={"error": "这条用户密钥不存在，可能已经被删除"})
         return {"item": item, "items": auth_service.list_keys(role="user")}
 
+    @router.get("/api/auth/users/{key_id}/key")
+    async def reveal_user_key(key_id: str, authorization: str | None = Header(default=None)):
+        require_admin(authorization)
+        raw_key = auth_service.reveal_key(key_id)
+        if raw_key is None:
+            raise HTTPException(status_code=404, detail={"error": "密钥不存在或不支持查看"})
+        return {"key": raw_key}
+
     @router.delete("/api/auth/users/{key_id}")
     async def delete_user_key(key_id: str, authorization: str | None = Header(default=None)):
         require_admin(authorization)

@@ -253,6 +253,7 @@ export type UserKey = {
   id: string;
   name: string;
   role: "user";
+  key_masked?: string | null;
   enabled: boolean;
   created_at: string | null;
   last_used_at: string | null;
@@ -636,6 +637,10 @@ export async function updateUserKey(
     method: "POST",
     body: updates,
   });
+}
+
+export async function revealUserKey(keyId: string) {
+  return httpRequest<{ key: string }>(`/api/auth/users/${encodeURIComponent(keyId)}/key`);
 }
 
 export async function deleteUserKey(keyId: string) {

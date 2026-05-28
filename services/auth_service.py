@@ -86,11 +86,13 @@ class AuthService:
         name = self._clean(raw.get("name")) or self._default_name(role)
         created_at = self._clean(raw.get("created_at")) or _now_iso()
         last_used_at = self._clean(raw.get("last_used_at")) or None
+        raw_key = self._clean(raw.get("key")) or None
         item: dict[str, object] = {
             "id": item_id,
             "name": name,
             "role": role,
             "key_hash": key_hash,
+            "key": raw_key,
             "enabled": bool(raw.get("enabled", True)),
             "created_at": created_at,
             "last_used_at": last_used_at,
@@ -150,10 +152,16 @@ class AuthService:
 
     @staticmethod
     def _public_item(item: dict[str, object]) -> dict[str, object]:
+        raw_key = str(item.get("key") or "").strip()
+        if raw_key and str(item.get("role") or "").strip().lower() != "admin":
+            masked = f"{raw_key[:6]}...{raw_key[-4:]}" if len(raw_key) > 12 else "***"
+        else:
+            masked = None
         public: dict[str, object] = {
             "id": item.get("id"),
             "name": item.get("name"),
             "role": item.get("role"),
+            "key_masked": masked,
             "enabled": bool(item.get("enabled", True)),
             "created_at": item.get("created_at"),
             "last_used_at": item.get("last_used_at"),
@@ -254,6 +262,7 @@ class AuthService:
                 "name": normalized_name,
                 "role": role,
                 "key_hash": key_hash,
+                "key": raw_key,
                 "enabled": True,
                 "created_at": _now_iso(),
                 "last_used_at": None,
@@ -294,7 +303,9 @@ class AuthService:
                 if "enabled" in updates and updates.get("enabled") is not None:
                     next_item["enabled"] = bool(updates.get("enabled"))
                 if "key" in updates and updates.get("key") is not None:
-                    next_item["key_hash"] = self._build_key_hash_locked(str(updates.get("key") or ""), exclude_id=normalized_id)
+                    new_raw_key = str(updates.get("key") or "")
+                    next_item["key_hash"] = self._build_key_hash_locked(new_raw_key, exclude_id=normalized_id)
+                    next_item["key"] = new_raw_key
                 if next_role == "user" and "quota_24h" in updates and updates.get("quota_24h") is not None:
                     quota_value = self._normalize_quota(updates.get("quota_24h"))
                     if quota_value is None:
@@ -303,6 +314,19 @@ class AuthService:
                 self._items[index] = next_item
                 self._save()
                 return self._public_item(next_item)
+        return None
+
+    def reveal_key(self, key_id: str) -> str | None:
+        normalized_id = self._clean(key_id)
+        if not normalized_id:
+            return None
+        with self._lock:
+            for item in self._items:
+                if self._clean(item.get("id")) != normalized_id:
+                    continue
+                if str(item.get("role") or "").strip().lower() == "admin":
+                    return None
+                return self._clean(item.get("key")) or None
         return None
 
     def delete_key(self, key_id: str, *, role: AuthRole | None = None) -> bool:

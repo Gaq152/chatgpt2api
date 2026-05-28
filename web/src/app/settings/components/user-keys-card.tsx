@@ -16,7 +16,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { createUserKey, deleteUserKey, fetchUserKeys, updateUserKey, type UserKey } from "@/lib/api";
+import { createUserKey, deleteUserKey, fetchUserKeys, revealUserKey, updateUserKey, type UserKey } from "@/lib/api";
 import { formatTime } from "@/lib/format-time";
 
 function formatDateTime(value?: string | null) {
@@ -32,7 +32,8 @@ export function UserKeysCard() {
   const [quota24h, setQuota24h] = useState("");
   const [isCreating, setIsCreating] = useState(false);
   const [pendingIds, setPendingIds] = useState<Set<string>>(() => new Set());
-  const [revealedKey, setRevealedKey] = useState("");
+  const [revealedKeys, setRevealedKeys] = useState<Record<string, string>>({});
+  const [revealingKeyId, setRevealingKeyId] = useState<string | null>(null);
   const [deletingItem, setDeletingItem] = useState<UserKey | null>(null);
   const [editingItem, setEditingItem] = useState<UserKey | null>(null);
   const [editName, setEditName] = useState("");
@@ -69,7 +70,6 @@ export function UserKeysCard() {
     try {
       const data = await createUserKey(name.trim(), quotaValue);
       setItems(data.items);
-      setRevealedKey(data.key);
       setName("");
       setQuota24h("");
       setIsDialogOpen(false);
@@ -202,24 +202,6 @@ export function UserKeysCard() {
             </Button>
           </div>
 
-          {revealedKey ? (
-            <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-4 text-sm text-emerald-900">
-              <div className="font-medium">新密钥仅展示一次，请立即保存：</div>
-              <div className="mt-3 flex flex-col gap-3 rounded-lg border border-emerald-200 bg-white/80 p-3 md:flex-row md:items-center md:justify-between">
-                <code className="break-all font-mono text-[13px]">{revealedKey}</code>
-                <Button
-                  type="button"
-                  variant="outline"
-                  className="h-9 rounded-xl border-emerald-200 bg-white px-4 text-emerald-700"
-                  onClick={() => void handleCopy(revealedKey)}
-                >
-                  <Copy className="size-4" />
-                  复制
-                </Button>
-              </div>
-            </div>
-          ) : null}
-
           {isLoading ? (
             <div className="flex items-center justify-center py-10">
               <LoaderCircle className="size-5 animate-spin text-stone-400" />
@@ -241,6 +223,45 @@ export function UserKeysCard() {
                           {item.enabled ? "已启用" : "已禁用"}
                         </Badge>
                       </div>
+                      {(item.key_masked || revealedKeys[item.id]) ? (
+                        <div className="flex items-center gap-2">
+                          <code className="truncate rounded-md bg-stone-50 px-2 py-1 font-mono text-xs text-stone-600">
+                            {revealedKeys[item.id] || item.key_masked}
+                          </code>
+                          {revealedKeys[item.id] ? (
+                            <button
+                              type="button"
+                              className="inline-flex shrink-0 items-center gap-1 rounded-md px-1.5 py-1 text-xs text-stone-500 transition hover:bg-stone-100 hover:text-stone-700"
+                              onClick={() => void handleCopy(revealedKeys[item.id])}
+                            >
+                              <Copy className="size-3" />
+                              复制
+                            </button>
+                          ) : (
+                            <button
+                              type="button"
+                              className="inline-flex shrink-0 items-center gap-1 rounded-md px-1.5 py-1 text-xs text-stone-500 transition hover:bg-stone-100 hover:text-stone-700"
+                              disabled={revealingKeyId === item.id}
+                              onClick={async () => {
+                                setRevealingKeyId(item.id);
+                                try {
+                                  const data = await revealUserKey(item.id);
+                                  setRevealedKeys((prev) => ({ ...prev, [item.id]: data.key }));
+                                  await navigator.clipboard.writeText(data.key);
+                                  toast.success("已复制到剪贴板");
+                                } catch (error) {
+                                  toast.error(error instanceof Error ? error.message : "获取密钥失败");
+                                } finally {
+                                  setRevealingKeyId(null);
+                                }
+                              }}
+                            >
+                              {revealingKeyId === item.id ? <LoaderCircle className="size-3 animate-spin" /> : <Copy className="size-3" />}
+                              查看并复制
+                            </button>
+                          )}
+                        </div>
+                      ) : null}
                       <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-stone-500">
                         <span>创建时间 {formatDateTime(item.created_at)}</span>
                         <span>最近使用 {formatDateTime(item.last_used_at)}</span>
