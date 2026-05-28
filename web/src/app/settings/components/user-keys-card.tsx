@@ -229,7 +229,6 @@ export function UserKeysCard() {
                         <Badge variant={item.enabled ? "success" : "secondary"} className="rounded-md">
                           {item.enabled ? "已启用" : "已禁用"}
                         </Badge>
-                      </div>
                       {(item.key_masked || revealedKeys[item.id]) ? (
                         <div className="flex items-center gap-1.5">
                           <code className="inline-flex items-center gap-1.5 rounded-md border border-stone-200 bg-stone-50 py-1 pl-2.5 pr-1 font-mono text-xs text-stone-600">
@@ -284,6 +283,7 @@ export function UserKeysCard() {
                           </button>
                         </div>
                       ) : null}
+                      </div>
                       <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-stone-500">
                         <span>创建时间 {formatDateTime(item.created_at)}</span>
                         <span>最近使用 {formatDateTime(item.last_used_at)}</span>
