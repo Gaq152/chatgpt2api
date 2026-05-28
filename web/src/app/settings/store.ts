@@ -89,6 +89,7 @@ function normalizeConfig(config: SettingsConfig): SettingsConfig {
     image_account_concurrency: Number(config.image_account_concurrency || 3),
     auto_remove_invalid_accounts: Boolean(config.auto_remove_invalid_accounts),
     auto_remove_rate_limited_accounts: Boolean(config.auto_remove_rate_limited_accounts),
+    auto_relogin: config.auto_relogin !== false,
     log_levels: Array.isArray(config.log_levels) ? config.log_levels : [],
     proxy: typeof config.proxy === "string" ? config.proxy : "",
     base_url: typeof config.base_url === "string" ? config.base_url : "",
@@ -206,6 +207,7 @@ type SettingsStore = {
   setImageAccountConcurrency: (value: string) => void;
   setAutoRemoveInvalidAccounts: (value: boolean) => void;
   setAutoRemoveRateLimitedAccounts: (value: boolean) => void;
+  setAutoRelogin: (value: boolean) => void;
   setLogLevel: (level: string, enabled: boolean) => void;
   setProxy: (value: string) => void;
   setBaseUrl: (value: string) => void;
@@ -342,6 +344,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
         image_account_concurrency: Math.max(1, Number(config.image_account_concurrency) || 3),
         auto_remove_invalid_accounts: Boolean(config.auto_remove_invalid_accounts),
         auto_remove_rate_limited_accounts: Boolean(config.auto_remove_rate_limited_accounts),
+        auto_relogin: config.auto_relogin !== false,
         proxy: config.proxy.trim(),
         base_url: String(config.base_url || "").trim(),
         global_system_prompt: String(config.global_system_prompt || "").trim(),
@@ -419,6 +422,10 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
 
   setAutoRemoveRateLimitedAccounts: (value) => {
     set((state) => state.config ? { config: { ...state.config, auto_remove_rate_limited_accounts: value } } : {});
+  },
+
+  setAutoRelogin: (value) => {
+    set((state) => state.config ? { config: { ...state.config, auto_relogin: value } } : {});
   },
 
   setLogLevel: (level, enabled) => {

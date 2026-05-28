@@ -268,6 +268,10 @@ class ConfigStore:
         return bool(value)
 
     @property
+    def auto_relogin(self) -> bool:
+        return _normalize_bool(self.data.get("auto_relogin"), default=True)
+
+    @property
     def log_levels(self) -> list[str]:
         levels = self.data.get("log_levels")
         if not isinstance(levels, list):
@@ -341,6 +345,7 @@ class ConfigStore:
         data["image_account_concurrency"] = self.image_account_concurrency
         data["auto_remove_invalid_accounts"] = self.auto_remove_invalid_accounts
         data["auto_remove_rate_limited_accounts"] = self.auto_remove_rate_limited_accounts
+        data["auto_relogin"] = self.auto_relogin
         data["log_levels"] = self.log_levels
         data["sensitive_words"] = self.sensitive_words
         data["ai_review"] = self.ai_review

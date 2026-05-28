@@ -764,6 +764,8 @@ class AccountService:
 
     def _try_relogin_recovery(self, access_token: str, snapshot: dict) -> str:
         """refresh_token 作废后，尝试用存储的邮箱+密码重新登录换取全新三件套。"""
+        if not config.auto_relogin:
+            return access_token
         email = str(snapshot.get("email") or "").strip()
         password = str(snapshot.get("password") or "").strip()
         if not email or not password:
