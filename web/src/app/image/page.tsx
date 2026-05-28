@@ -24,6 +24,7 @@ import {
   fetchImageTasks,
   fetchMyQuota,
   type Account,
+  type ImageModel,
   type ImageTask,
 } from "@/lib/api";
 import { useAuthGuard } from "@/lib/use-auth-guard";
@@ -45,13 +46,21 @@ import {
 } from "@/store/image-conversations";
 
 const ACTIVE_CONVERSATION_STORAGE_KEY_PREFIX = "chatgpt2api:image_active_conversation_id";
-const IMAGE_SIZE_STORAGE_KEY = "chatgpt2api:image_last_size";
+const IMAGE_RATIO_STORAGE_KEY = "chatgpt2api:image_last_ratio";
+const IMAGE_TIER_STORAGE_KEY = "chatgpt2api:image_last_tier";
+const IMAGE_QUALITY_STORAGE_KEY = "chatgpt2api:image_last_quality";
+const IMAGE_MODEL_STORAGE_KEY = "chatgpt2api:image_last_model";
 const IMAGE_COUNT_STORAGE_KEY = "chatgpt2api:image_last_count";
 const SCROLL_TO_LATEST_THRESHOLD = 160;
 
 function clampImageCount(value: string) {
   return String(Math.min(100, Math.max(1, Math.floor(Number(value) || 1))));
 }
+function parseImageSize(size: string) {
+  const match = size.match(/^(\d+)x(\d+)$/);
+  return match ? { width: match[1], height: match[2] } : { width: "1024", height: "1024" };
+}
+
 const activeConversationQueueIds = new Set<string>();
 
 function getResultsDistanceFromBottom(element: HTMLElement) {
@@ -357,8 +366,13 @@ function ImagePageContent({ isAdmin, subjectId }: { isAdmin: boolean; subjectId:
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [imagePrompt, setImagePrompt] = useState("");
-  const [imageCount, setImageCount] = useState("1");
-  const [imageSize, setImageSize] = useState("");
+  const [imageCount, setImageCount] = useState("3");
+  const [imageRatio, setImageRatio] = useState("auto");
+  const [imageTier, setImageTier] = useState("1k");
+  const [imageWidth, setImageWidth] = useState("1024");
+  const [imageHeight, setImageHeight] = useState("1024");
+  const [imageQuality, setImageQuality] = useState("auto");
+  const [imageModel, setImageModel] = useState<ImageModel>("gpt-image-2");
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
   const [referenceImageFiles, setReferenceImageFiles] = useState<File[]>([]);
   const [referenceImages, setReferenceImages] = useState<StoredReferenceImage[]>([]);
@@ -463,9 +477,17 @@ function ImagePageContent({ isAdmin, subjectId }: { isAdmin: boolean; subjectId:
 
     const loadHistory = async () => {
       try {
-        const storedSize = typeof window !== "undefined" ? window.localStorage.getItem(IMAGE_SIZE_STORAGE_KEY) : null;
+        const storedRatio = typeof window !== "undefined" ? window.localStorage.getItem(IMAGE_RATIO_STORAGE_KEY) : null;
+        const storedTier = typeof window !== "undefined" ? window.localStorage.getItem(IMAGE_TIER_STORAGE_KEY) : null;
+        const storedQuality = typeof window !== "undefined" ? window.localStorage.getItem(IMAGE_QUALITY_STORAGE_KEY) : null;
+        const storedModel = typeof window !== "undefined" ? window.localStorage.getItem(IMAGE_MODEL_STORAGE_KEY) : null;
         const storedCount = typeof window !== "undefined" ? window.localStorage.getItem(IMAGE_COUNT_STORAGE_KEY) : null;
-        setImageSize(storedSize || "");
+        setImageRatio(storedRatio || "1:1");
+        setImageTier(storedTier || "1k");
+        setImageWidth("1024");
+        setImageHeight("1024");
+        setImageQuality(storedQuality || "auto");
+        setImageModel(storedModel === "codex-gpt-image-2" ? "codex-gpt-image-2" : "gpt-image-2");
         setImageCount(storedCount ? clampImageCount(storedCount) : "1");
 
         const items = await initImageConversations(subjectId);
@@ -599,12 +621,11 @@ function ImagePageContent({ isAdmin, subjectId }: { isAdmin: boolean; subjectId:
       return;
     }
 
-    if (imageSize) {
-      window.localStorage.setItem(IMAGE_SIZE_STORAGE_KEY, imageSize);
-      return;
-    }
-    window.localStorage.removeItem(IMAGE_SIZE_STORAGE_KEY);
-  }, [imageSize]);
+    window.localStorage.setItem(IMAGE_RATIO_STORAGE_KEY, imageRatio);
+    window.localStorage.setItem(IMAGE_TIER_STORAGE_KEY, imageTier);
+    window.localStorage.setItem(IMAGE_QUALITY_STORAGE_KEY, imageQuality);
+    window.localStorage.setItem(IMAGE_MODEL_STORAGE_KEY, imageModel);
+  }, [imageRatio, imageTier, imageQuality, imageModel]);
 
   useEffect(() => {
     if (typeof window !== "undefined" && parsedCount > 0) {
@@ -881,7 +902,13 @@ function ImagePageContent({ isAdmin, subjectId }: { isAdmin: boolean; subjectId:
     setSelectedConversationId(conversationId);
     setImagePrompt(turn.prompt);
     setImageCount(String(Math.max(1, turn.count || turn.images.length || 1)));
-    setImageSize(turn.size);
+    setImageRatio(turn.ratio);
+    setImageTier(turn.tier);
+    const parsedSize = parseImageSize(turn.size);
+    setImageWidth(parsedSize.width);
+    setImageHeight(parsedSize.height);
+    setImageQuality(turn.quality);
+    setImageModel(turn.model);
     setReferenceImages(turn.referenceImages);
     const files = await Promise.all(
       turn.referenceImages.map(async (image) => {
@@ -1012,8 +1039,8 @@ function ImagePageContent({ isAdmin, subjectId }: { isAdmin: boolean; subjectId:
           pendingImages.map((image) => {
             const taskId = image.taskId || image.id;
             return activeTurn.mode === "edit"
-              ? createImageEditTask(taskId, referenceFiles, activeTurn.prompt, activeTurn.model, activeTurn.size)
-              : createImageGenerationTask(taskId, activeTurn.prompt, activeTurn.model, activeTurn.size);
+              ? createImageEditTask(taskId, referenceFiles, activeTurn.prompt, activeTurn.model, activeTurn.size, activeTurn.quality)
+              : createImageGenerationTask(taskId, activeTurn.prompt, activeTurn.model, activeTurn.size, activeTurn.quality);
           }),
         );
         await applyTasks(submitted);
@@ -1041,8 +1068,8 @@ function ImagePageContent({ isAdmin, subjectId }: { isAdmin: boolean; subjectId:
             const resubmitted = await Promise.all(
               missingImages.map((image) =>
                 activeTurn.mode === "edit"
-                  ? createImageEditTask(image.taskId || image.id, referenceFiles, activeTurn.prompt, activeTurn.model, activeTurn.size)
-                  : createImageGenerationTask(image.taskId || image.id, activeTurn.prompt, activeTurn.model, activeTurn.size),
+                  ? createImageEditTask(image.taskId || image.id, referenceFiles, activeTurn.prompt, activeTurn.model, activeTurn.size, activeTurn.quality)
+                  : createImageGenerationTask(image.taskId || image.id, activeTurn.prompt, activeTurn.model, activeTurn.size, activeTurn.quality),
               ),
             );
             if (resubmitted.length > 0) {
@@ -1113,6 +1140,9 @@ function ImagePageContent({ isAdmin, subjectId }: { isAdmin: boolean; subjectId:
         referenceImages: sourceTurn.referenceImages,
         count,
         size: sourceTurn.size,
+        ratio: sourceTurn.ratio,
+        tier: sourceTurn.tier,
+        quality: sourceTurn.quality,
         images: createLoadingImages(nextTurnId, count),
         createdAt: now,
         status: "queued",
@@ -1207,14 +1237,18 @@ function ImagePageContent({ isAdmin, subjectId }: { isAdmin: boolean; subjectId:
     const now = new Date().toISOString();
     const conversationId = targetConversation?.id ?? createId();
     const turnId = createId();
+    const imageSize = `${imageWidth || 1024}x${imageHeight || 1024}`;
     const draftTurn: ImageTurn = {
       id: turnId,
       prompt,
-      model: "gpt-image-2",
+      model: imageModel,
       mode: effectiveImageMode,
       referenceImages: effectiveImageMode === "edit" ? referenceImages : [],
       count: parsedCount,
       size: imageSize,
+      ratio: imageRatio,
+      tier: imageTier,
+      quality: imageQuality,
       images: createLoadingImages(turnId, parsedCount),
       createdAt: now,
       status: "queued",
@@ -1363,7 +1397,12 @@ function ImagePageContent({ isAdmin, subjectId }: { isAdmin: boolean; subjectId:
           <ImageComposer
             prompt={imagePrompt}
             imageCount={imageCount}
-            imageSize={imageSize}
+            imageRatio={imageRatio}
+            imageTier={imageTier}
+            imageWidth={imageWidth}
+            imageHeight={imageHeight}
+            imageQuality={imageQuality}
+            imageModel={imageModel}
             availableQuota={availableQuota}
             quotaTooltip={quotaTooltip}
             quotaTone={quotaTone}
@@ -1373,7 +1412,12 @@ function ImagePageContent({ isAdmin, subjectId }: { isAdmin: boolean; subjectId:
             fileInputRef={fileInputRef}
             onPromptChange={setImagePrompt}
             onImageCountChange={(value) => setImageCount(value ? clampImageCount(value) : "")}
-            onImageSizeChange={setImageSize}
+            onImageRatioChange={setImageRatio}
+            onImageTierChange={setImageTier}
+            onImageWidthChange={setImageWidth}
+            onImageHeightChange={setImageHeight}
+            onImageQualityChange={setImageQuality}
+            onImageModelChange={setImageModel}
             onSubmit={handleSubmit}
             onPickReferenceImage={() => fileInputRef.current?.click()}
             onReferenceImageChange={handleReferenceImageChange}

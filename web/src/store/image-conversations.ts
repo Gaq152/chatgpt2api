@@ -46,6 +46,9 @@ export type ImageTurn = {
   referenceImages: StoredReferenceImage[];
   count: number;
   size: string;
+  ratio: string;
+  tier: string;
+  quality: string;
   images: StoredImage[];
   createdAt: string;
   status: ImageTurnStatus;
@@ -175,6 +178,9 @@ function normalizeTurn(turn: ImageTurn & Record<string, unknown>): ImageTurn {
     referenceImages: getLegacyReferenceImages(turn),
     count: Math.max(1, Number(turn.count || normalizedImages.length || 1)),
     size: typeof turn.size === "string" ? turn.size : "",
+    ratio: typeof turn.ratio === "string" && turn.ratio ? turn.ratio : "1:1",
+    tier: typeof turn.tier === "string" && turn.tier ? turn.tier : "1k",
+    quality: typeof turn.quality === "string" && turn.quality ? turn.quality : "auto",
     images: normalizedImages,
     createdAt: String(turn.createdAt || new Date().toISOString()),
     status:
@@ -202,6 +208,9 @@ function normalizeConversation(conversation: ImageConversation & Record<string, 
           referenceImages: getLegacyReferenceImages(conversation),
           count: Number(conversation.count || 1),
           size: typeof conversation.size === "string" ? conversation.size : "",
+          ratio: typeof conversation.ratio === "string" && conversation.ratio ? conversation.ratio : "1:1",
+          tier: typeof conversation.tier === "string" && conversation.tier ? conversation.tier : "1k",
+          quality: typeof conversation.quality === "string" && conversation.quality ? conversation.quality : "auto",
           images: Array.isArray(conversation.images) ? (conversation.images as StoredImage[]) : [],
           createdAt: String(conversation.createdAt || new Date().toISOString()),
           status:
@@ -253,6 +262,9 @@ function serverTurnToLocal(turn: ServerImageTurn): ImageTurn {
     })),
     count: turn.count,
     size: turn.size || "",
+    ratio: turn.ratio || "1:1",
+    tier: turn.tier || "1k",
+    quality: turn.quality || "auto",
     images: (turn.images || []).map((img) => ({
       id: img.id,
       taskId: img.task_id,
@@ -307,6 +319,9 @@ function localTurnToServer(turn: ImageTurn): ServerImageTurn {
       .filter((ref): ref is ServerReferenceImage => ref !== null),
     count: turn.count,
     size: turn.size,
+    ratio: turn.ratio,
+    tier: turn.tier,
+    quality: turn.quality,
     images: turn.images.map(localImageToServer),
     created_at: turn.createdAt,
     status: turn.status,
