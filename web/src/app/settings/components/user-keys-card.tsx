@@ -70,6 +70,10 @@ export function UserKeysCard() {
     try {
       const data = await createUserKey(name.trim(), quotaValue);
       setItems(data.items);
+      const newItemId = String(data.item?.id || "");
+      if (newItemId && data.key) {
+        setRevealedKeys((prev) => ({ ...prev, [newItemId]: data.key }));
+      }
       setName("");
       setQuota24h("");
       setIsDialogOpen(false);
@@ -162,6 +166,9 @@ export function UserKeysCard() {
         ...(nextQuota !== undefined ? { quota_24h: nextQuota } : {}),
       });
       setItems(data.items);
+      if (trimmedKey) {
+        setRevealedKeys((prev) => ({ ...prev, [item.id]: trimmedKey }));
+      }
       setEditingItem(null);
       setEditKey("");
       setEditQuota("");
