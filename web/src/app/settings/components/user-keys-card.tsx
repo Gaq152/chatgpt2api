@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Ban, CheckCircle2, Copy, KeyRound, LoaderCircle, Pencil, Plus, Trash2 } from "lucide-react";
+import { Ban, CheckCircle2, Copy, Eye, EyeOff, KeyRound, LoaderCircle, Pencil, Plus, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
@@ -231,43 +231,9 @@ export function UserKeysCard() {
                         </Badge>
                       </div>
                       {(item.key_masked || revealedKeys[item.id]) ? (
-                        <div className="flex items-center gap-2">
-                          <code className="truncate rounded-md bg-stone-50 px-2 py-1 font-mono text-xs text-stone-600">
-                            {revealedKeys[item.id] || item.key_masked}
-                          </code>
-                          {revealedKeys[item.id] ? (
-                            <button
-                              type="button"
-                              className="inline-flex shrink-0 items-center gap-1 rounded-md px-1.5 py-1 text-xs text-stone-500 transition hover:bg-stone-100 hover:text-stone-700"
-                              onClick={() => void handleCopy(revealedKeys[item.id])}
-                            >
-                              <Copy className="size-3" />
-                              复制
-                            </button>
-                          ) : (
-                            <button
-                              type="button"
-                              className="inline-flex shrink-0 items-center gap-1 rounded-md px-1.5 py-1 text-xs text-stone-500 transition hover:bg-stone-100 hover:text-stone-700"
-                              disabled={revealingKeyId === item.id}
-                              onClick={async () => {
-                                setRevealingKeyId(item.id);
-                                try {
-                                  const data = await revealUserKey(item.id);
-                                  setRevealedKeys((prev) => ({ ...prev, [item.id]: data.key }));
-                                  await navigator.clipboard.writeText(data.key);
-                                  toast.success("已复制到剪贴板");
-                                } catch (error) {
-                                  toast.error(error instanceof Error ? error.message : "获取密钥失败");
-                                } finally {
-                                  setRevealingKeyId(null);
-                                }
-                              }}
-                            >
-                              {revealingKeyId === item.id ? <LoaderCircle className="size-3 animate-spin" /> : <Copy className="size-3" />}
-                              查看并复制
-                            </button>
-                          )}
-                        </div>
+                        <code className="truncate rounded-md bg-stone-50 px-2 py-1 font-mono text-xs text-stone-600">
+                          {revealedKeys[item.id] || item.key_masked}
+                        </code>
                       ) : null}
                       <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-stone-500">
                         <span>创建时间 {formatDateTime(item.created_at)}</span>
@@ -281,6 +247,55 @@ export function UserKeysCard() {
                     </div>
 
                     <div className="flex items-center gap-2">
+                      {item.key_masked ? (
+                        revealedKeys[item.id] ? (
+                          <>
+                            <Button
+                              type="button"
+                              variant="outline"
+                              className="h-9 rounded-xl border-stone-200 bg-white px-4 text-stone-700"
+                              onClick={() => void handleCopy(revealedKeys[item.id])}
+                            >
+                              <Copy className="size-4" />
+                              复制
+                            </Button>
+                            <Button
+                              type="button"
+                              variant="outline"
+                              className="h-9 rounded-xl border-stone-200 bg-white px-4 text-stone-700"
+                              onClick={() => setRevealedKeys((prev) => {
+                                const next = { ...prev };
+                                delete next[item.id];
+                                return next;
+                              })}
+                            >
+                              <EyeOff className="size-4" />
+                              隐藏
+                            </Button>
+                          </>
+                        ) : (
+                          <Button
+                            type="button"
+                            variant="outline"
+                            className="h-9 rounded-xl border-stone-200 bg-white px-4 text-stone-700"
+                            disabled={revealingKeyId === item.id}
+                            onClick={async () => {
+                              setRevealingKeyId(item.id);
+                              try {
+                                const data = await revealUserKey(item.id);
+                                setRevealedKeys((prev) => ({ ...prev, [item.id]: data.key }));
+                              } catch (error) {
+                                toast.error(error instanceof Error ? error.message : "获取密钥失败");
+                              } finally {
+                                setRevealingKeyId(null);
+                              }
+                            }}
+                          >
+                            {revealingKeyId === item.id ? <LoaderCircle className="size-4 animate-spin" /> : <Eye className="size-4" />}
+                            查看
+                          </Button>
+                        )
+                      ) : null}
                       <Button
                         type="button"
                         variant="outline"
