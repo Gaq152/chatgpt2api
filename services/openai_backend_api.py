@@ -7,6 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
+from collections.abc import Callable
 from typing import Any, Dict, Iterator, Optional
 
 from curl_cffi import requests
@@ -73,6 +74,7 @@ class OpenAIBackendAPI:
         self.session_id = self.fp["oai-session-id"]
         self.pow_script_sources: list[str] = []
         self.pow_data_build = ""
+        self.progress_callback: Callable[[str], None] | None = None
         self.session = requests.Session(**proxy_settings.build_session_kwargs(
             impersonate=self.fp["impersonate"],
             verify=True,
@@ -152,13 +154,16 @@ class OpenAIBackendAPI:
                 return int(item.get("remaining") or 0), str(item.get("reset_after") or "") or None, False
         return 0, None, True
 
+    def _raise_on_error(self, response: Any, path: str) -> None:
+        if response.status_code == 401:
+            raise InvalidAccessTokenError(f"token invalidated ({path})")
+        raise RuntimeError(f"{path} failed: HTTP {response.status_code}")
+
     def _get_me(self) -> Dict[str, Any]:
         path = "/backend-api/me"
         response = self.session.get(self.base_url + path, headers=self._headers(path), timeout=20)
         if response.status_code != 200:
-            if response.status_code == 401:
-                raise InvalidAccessTokenError(f"{path} failed: HTTP {response.status_code}")
-            raise RuntimeError(f"{path} failed: HTTP {response.status_code}")
+            self._raise_on_error(response, path)
         return response.json()
 
     def _get_conversation_init(self) -> Dict[str, Any]:
@@ -175,22 +180,27 @@ class OpenAIBackendAPI:
             timeout=20,
         )
         if response.status_code != 200:
-            if response.status_code == 401:
-                raise InvalidAccessTokenError(f"{path} failed: HTTP {response.status_code}")
-            raise RuntimeError(f"{path} failed: HTTP {response.status_code}")
+            self._raise_on_error(response, path)
         return response.json()
 
     def _get_default_account(self) -> Dict[str, Any]:
-        route = "/backend-api/accounts/check/v4-2023-04-27"
-        response = self.session.get(self.base_url + route + "?timezone_offset_min=-480", headers=self._headers(route),
+        path = "/backend-api/accounts/check/v4-2023-04-27"
+        response = self.session.get(self.base_url + path + "?timezone_offset_min=-480", headers=self._headers(path),
                                     timeout=20)
         if response.status_code != 200:
-            if response.status_code == 401:
-                raise InvalidAccessTokenError(f"{route} failed: HTTP {response.status_code}")
-            raise RuntimeError(f"/backend-api/accounts/check failed: HTTP {response.status_code}")
+            self._raise_on_error(response, path)
         payload = response.json()
-        logger.debug({"event": "backend_user_info_account_payload", "account_payload": payload})
-        return ((payload.get("accounts") or {}).get("default") or {}).get("account") or {}
+        default_account = ((payload.get("accounts") or {}).get("default") or {}).get("account") or {}
+        logger.debug({
+            "event": "backend_user_info_account_payload",
+            "plan_type": default_account.get("plan_type"),
+            "account_user_role": default_account.get("account_user_role"),
+            "account_id": default_account.get("account_id"),
+            "is_deactivated": default_account.get("is_deactivated"),
+            "has_active_subscription": (payload.get("accounts") or {}).get("default", {}).get("entitlement", {}).get("has_active_subscription"),
+            "subscription_plan": (payload.get("accounts") or {}).get("default", {}).get("entitlement", {}).get("subscription_plan"),
+        })
+        return default_account
 
     def get_user_info(self) -> Dict[str, Any]:
         """获取当前 token 的账号信息。"""
@@ -496,7 +506,6 @@ class OpenAIBackendAPI:
         )
         ensure_ok(response, path)
         upload_meta = response.json()
-        time.sleep(0.5)
         response = self.session.put(
             upload_meta["upload_url"],
             headers={
@@ -643,34 +652,50 @@ class OpenAIBackendAPI:
                  "sediment_ids": sediment_ids})
         return sorted(records, key=lambda item: item["create_time"])
 
-    def _poll_image_results(self, conversation_id: str, timeout_secs: float = 120.0) -> tuple[list[str], list[str]]:
-        """Poll the conversation document until image file ids appear or budget runs out.
+    @staticmethod
+    def _add_unique(values: list[str], candidates: list[str]) -> None:
+        for candidate in candidates:
+            if candidate and candidate not in values:
+                values.append(candidate)
 
-        - Sleeps image_poll_initial_wait_secs first (default 10s, +jitter). ChatGPT
-          image generation takes ~30s; polling immediately wastes requests and trips
-          a transient 429 the upstream returns within ~200ms of the SSE stream
-          closing (the conversation document is not yet committed).
-        - Subsequent polls are image_poll_interval_secs apart (default 10s).
-        - On upstream 429 / 5xx or network errors, backs off exponentially
-          (capped at 16s, +jitter) honoring Retry-After when present.
-        - All sleeps stay within timeout_secs; on exhaustion raises ImagePollTimeoutError.
-        """
+    def _poll_image_results(
+            self,
+            conversation_id: str,
+            timeout_secs: float = 120.0,
+            initial_file_ids: list[str] | None = None,
+            initial_sediment_ids: list[str] | None = None,
+    ) -> tuple[list[str], list[str]]:
+        """Poll the conversation document until image file ids appear or budget runs out."""
         start = time.time()
         attempt = 0
         interval = float(config.image_poll_interval_secs)
         initial_wait = float(config.image_poll_initial_wait_secs)
+        file_ids: list[str] = []
+        sediment_ids: list[str] = []
+        self._add_unique(file_ids, initial_file_ids or [])
+        self._add_unique(sediment_ids, initial_sediment_ids or [])
+        has_initial_ids = bool(file_ids or sediment_ids)
+        last_hit_key: tuple[tuple[str, ...], tuple[str, ...]] | None = (
+            (tuple(file_ids), tuple(sediment_ids)) if has_initial_ids else None
+        )
         logger.info({
             "event": "image_poll_start",
             "conversation_id": conversation_id,
             "timeout_secs": timeout_secs,
             "initial_wait_secs": initial_wait,
             "interval_secs": interval,
+            "initial_file_ids": file_ids,
+            "initial_sediment_ids": sediment_ids,
         })
 
         def _remaining() -> float:
             return timeout_secs - (time.time() - start)
 
-        if initial_wait > 0:
+        if has_initial_ids and config.image_settle_enabled:
+            settle_for = min(config.image_settle_secs, max(0.0, _remaining()))
+            if settle_for > 0:
+                time.sleep(settle_for)
+        elif initial_wait > 0:
             jitter = random.uniform(0, min(2.0, initial_wait * 0.2))
             sleep_for = min(initial_wait + jitter, max(0.0, _remaining()))
             if sleep_for > 0:
@@ -724,14 +749,29 @@ class OpenAIBackendAPI:
                         sediment_ids.append(sediment_id)
             logger.debug({"event": "image_poll_check", "conversation_id": conversation_id, "attempt": attempt,
                           "file_ids": file_ids, "sediment_ids": sediment_ids})
-            if file_ids:
-                logger.info({"event": "image_poll_hit", "conversation_id": conversation_id, "file_ids": file_ids,
-                             "sediment_ids": sediment_ids})
+            if file_ids or sediment_ids:
+                if not config.image_check_before_hit_enabled:
+                    logger.info({"event": "image_poll_hit_no_settle", "conversation_id": conversation_id,
+                                 "file_ids": file_ids, "sediment_ids": sediment_ids})
+                    return file_ids, sediment_ids
+                hit_key = (tuple(file_ids), tuple(sediment_ids))
+                if last_hit_key == hit_key:
+                    logger.info({"event": "image_poll_hit", "conversation_id": conversation_id, "file_ids": file_ids,
+                                 "sediment_ids": sediment_ids})
+                    return file_ids, sediment_ids
+                last_hit_key = hit_key
+                if not config.image_settle_enabled:
+                    logger.info({"event": "image_poll_hit_settle_disabled", "conversation_id": conversation_id,
+                                 "file_ids": file_ids, "sediment_ids": sediment_ids})
+                    return file_ids, sediment_ids
+                logger.info({"event": "image_poll_hit_pending_settle", "conversation_id": conversation_id,
+                             "file_ids": file_ids, "sediment_ids": sediment_ids,
+                             "settle_secs": config.image_settle_secs})
+                wait = min(config.image_settle_secs, max(0.0, _remaining()))
+                if wait > 0:
+                    time.sleep(wait)
+                    continue
                 return file_ids, sediment_ids
-            if sediment_ids:
-                logger.info({"event": "image_poll_hit", "conversation_id": conversation_id, "file_ids": [],
-                             "sediment_ids": sediment_ids})
-                return [], sediment_ids
             logger.debug({"event": "image_poll_wait", "conversation_id": conversation_id,
                           "elapsed_secs": round(time.time() - start, 1)})
             wait = min(interval, max(0.0, _remaining()))
@@ -847,15 +887,57 @@ class OpenAIBackendAPI:
             file_ids: list[str],
             sediment_ids: list[str],
             poll: bool = True,
+            poll_timeout_secs: float | None = None,
     ) -> list[str]:
         file_ids = [item for item in file_ids if item != "file_upload"]
         sediment_ids = list(sediment_ids)
-        if poll and conversation_id and not file_ids and not sediment_ids:
-            logger.info({"event": "image_resolve_poll_needed", "conversation_id": conversation_id})
-            polled_file_ids, polled_sediment_ids = self._poll_image_results(conversation_id,
-                                                                            config.image_poll_timeout_secs)
-            file_ids.extend(item for item in polled_file_ids if item and item not in file_ids)
-            sediment_ids.extend(item for item in polled_sediment_ids if item and item not in sediment_ids)
+        timeout = poll_timeout_secs if poll_timeout_secs is not None else config.image_poll_timeout_secs
+        if poll and conversation_id and (file_ids or sediment_ids):
+            if not config.image_check_before_hit_enabled and not config.image_settle_enabled:
+                logger.info({
+                    "event": "image_resolve_skip_poll_direct_resolve",
+                    "conversation_id": conversation_id,
+                    "file_ids": file_ids,
+                    "sediment_ids": sediment_ids,
+                })
+                return self._resolve_image_urls(conversation_id, file_ids, sediment_ids)
+        if poll and conversation_id:
+            logger.info({
+                "event": "image_resolve_poll_needed",
+                "conversation_id": conversation_id,
+                "initial_file_ids": file_ids,
+                "initial_sediment_ids": sediment_ids,
+                "poll_timeout_secs": timeout,
+            })
+            try:
+                polled_file_ids, polled_sediment_ids = self._poll_image_results(
+                    conversation_id,
+                    timeout,
+                    file_ids,
+                    sediment_ids,
+                )
+            except ImagePollTimeoutError:
+                if not file_ids and not sediment_ids:
+                    raise
+                logger.warning({
+                    "event": "image_resolve_poll_partial_timeout",
+                    "conversation_id": conversation_id,
+                    "file_ids": file_ids,
+                    "sediment_ids": sediment_ids,
+                })
+            except Exception as exc:
+                if not file_ids and not sediment_ids:
+                    raise
+                logger.warning({
+                    "event": "image_resolve_poll_partial_error",
+                    "conversation_id": conversation_id,
+                    "file_ids": file_ids,
+                    "sediment_ids": sediment_ids,
+                    "error": repr(exc),
+                })
+            else:
+                file_ids.extend(item for item in polled_file_ids if item and item not in file_ids)
+                sediment_ids.extend(item for item in polled_sediment_ids if item and item not in sediment_ids)
         return self._resolve_image_urls(conversation_id, file_ids, sediment_ids)
 
     def download_image_bytes(self, urls: list[str]) -> list[bytes]:
@@ -897,6 +979,14 @@ class OpenAIBackendAPI:
         finally:
             response.close()
 
+    def _report_progress(self, step: str) -> None:
+        """Report progress step to the callback if set."""
+        if self.progress_callback:
+            try:
+                self.progress_callback(step)
+            except Exception:
+                pass
+
     def _stream_picture_conversation(
             self,
             prompt: str,
@@ -905,11 +995,17 @@ class OpenAIBackendAPI:
     ) -> Iterator[str]:
         if not self.access_token:
             raise RuntimeError("access_token is required for image endpoints")
+        self._report_progress("uploading")
         references = [self._upload_image(image, f"image_{idx}.png") for idx, image in enumerate(images, start=1)]
+        self._report_progress("bootstrapping")
         self._bootstrap()
+        self._report_progress("getting_token")
         requirements = self._get_chat_requirements()
+        self._report_progress("preparing_conversation")
         conduit_token = self._prepare_image_conversation(prompt, requirements, model)
+        self._report_progress("starting_generation")
         response = self._start_image_generation(prompt, requirements, conduit_token, model, references)
+        self._report_progress("generating")
         try:
             yield from iter_sse_payloads(response)
         finally:
