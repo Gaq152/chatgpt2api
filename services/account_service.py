@@ -3,7 +3,7 @@ from __future__ import annotations
 import base64
 import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from threading import Condition, Event, Lock
+from threading import Condition, Event, Lock, Thread
 from typing import Any
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -29,6 +29,10 @@ class AccountService:
         self._image_inflight: dict[str, int] = {}
         self._refresh_events: dict[str, Event] = {}
         self._refresh_results: dict[str, str] = {}
+        self._refresh_progress: dict[str, dict] = {}
+        self._refresh_progress_lock = Lock()
+        self._relogin_progress: dict[str, dict] = {}
+        self._relogin_progress_lock = Lock()
         self._cumulative_total = self._load_cumulative_total()
 
     def _get_cumulative_file(self) -> Path:
@@ -334,21 +338,21 @@ class AccountService:
                 self._accounts[access_token] = account
                 self._save_accounts()
 
-    def remove_invalid_token(self, access_token: str, event: str, reason: str = "") -> bool:
+    def remove_invalid_token(self, access_token: str, event: str, reason: str = "", quiet: bool = False) -> bool:
         # 缓判：新号 10 分钟内 / 第一次 401 / 30 秒内重复 401 都先记账不真删，
         # 连续两次确认（且超出抖动窗口）才放过来走原删除流程。
         if access_token and not self._record_invalid_seen(access_token, event):
             return False
         status_reason = reason or f"token 无效 ({event})"
         if not config.auto_remove_invalid_accounts:
-            self.update_account(access_token, {"status": "异常", "quota": 0, "status_reason": status_reason})
+            self.update_account(access_token, {"status": "异常", "quota": 0, "status_reason": status_reason}, quiet=quiet)
             return False
         removed = bool(self.delete_accounts([access_token])["removed"])
         if removed:
             log_service.add(LOG_TYPE_ACCOUNT, "自动移除异常账号",
                             {"source": event, "token": anonymize_token(access_token)})
         elif access_token:
-            self.update_account(access_token, {"status": "异常", "quota": 0, "status_reason": status_reason})
+            self.update_account(access_token, {"status": "异常", "quota": 0, "status_reason": status_reason}, quiet=quiet)
         return removed
 
     def get_account(self, access_token: str) -> dict | None:
@@ -620,7 +624,7 @@ class AccountService:
             items = [dict(item) for item in self._accounts.values()]
         return {"removed": removed, "items": items}
 
-    def update_account(self, access_token: str, updates: dict) -> dict | None:
+    def update_account(self, access_token: str, updates: dict, quiet: bool = False) -> dict | None:
         if not access_token:
             return None
         with self._lock:
@@ -640,8 +644,9 @@ class AccountService:
                 return None
             self._accounts[access_token] = account
             self._save_accounts()
-            log_service.add(LOG_TYPE_ACCOUNT, "更新账号",
-                            {"token": anonymize_token(access_token), "status": account.get("status")})
+            if not quiet:
+                log_service.add(LOG_TYPE_ACCOUNT, "更新账号",
+                                {"token": anonymize_token(access_token), "status": account.get("status")})
             return dict(account)
         return None
 
@@ -865,38 +870,267 @@ class AccountService:
             return access_token
         return self._refresh_one_by_source(access_token)
 
-    def refresh_accounts(self, access_tokens: list[str]) -> dict[str, Any]:
+    # ---- 刷新进度追踪 ----
+
+    def init_refresh_progress(self, progress_id: str, total: int) -> None:
+        with self._refresh_progress_lock:
+            self._refresh_progress[progress_id] = {
+                "total": total,
+                "processed": 0,
+                "done": False,
+                "error": None,
+                "status_counts": {"正常": 0, "限流": 0, "异常": 0, "禁用": 0},
+                "total_quota": 0,
+            }
+
+    def update_refresh_progress(self, progress_id: str, token: str) -> None:
+        account = self.get_account(token)
+        status = str(account.get("status") or "正常").strip() if account else "正常"
+        quota = max(0, int(account.get("quota") or 0)) if account else 0
+        with self._refresh_progress_lock:
+            progress = self._refresh_progress.get(progress_id)
+            if progress is None:
+                return
+            progress["processed"] += 1
+            progress["status_counts"][status] = progress["status_counts"].get(status, 0) + 1
+            progress["total_quota"] += quota
+
+    def finish_refresh_progress(self, progress_id: str, result: dict | None = None, error: str | None = None) -> None:
+        with self._refresh_progress_lock:
+            progress = self._refresh_progress.get(progress_id)
+            if progress is None:
+                return
+            progress["done"] = True
+            progress["result"] = result
+            if error:
+                progress["error"] = error
+
+    def get_refresh_progress(self, progress_id: str) -> dict | None:
+        with self._refresh_progress_lock:
+            progress = self._refresh_progress.get(progress_id)
+            return dict(progress) if progress else None
+
+    # ---- 重新登录进度追踪 ----
+
+    def init_relogin_progress(self, progress_id: str, total: int) -> None:
+        with self._relogin_progress_lock:
+            self._relogin_progress[progress_id] = {
+                "total": total,
+                "processed": 0,
+                "done": False,
+                "error": None,
+                "results": [],
+            }
+
+    def update_relogin_progress(self, progress_id: str, token: str, status: str, error: str | None = None) -> None:
+        with self._relogin_progress_lock:
+            progress = self._relogin_progress.get(progress_id)
+            if progress is None:
+                return
+            progress["processed"] += 1
+            progress["results"].append({
+                "token": anonymize_token(token),
+                "status": status,
+                "error": error,
+            })
+            if progress["processed"] >= progress["total"]:
+                progress["done"] = True
+
+    def finish_relogin_progress(self, progress_id: str, result: dict | None = None, error: str | None = None) -> None:
+        with self._relogin_progress_lock:
+            progress = self._relogin_progress.get(progress_id)
+            if progress is None:
+                return
+            progress["done"] = True
+            progress["result"] = result
+            if error:
+                progress["error"] = error
+
+    def get_relogin_progress(self, progress_id: str) -> dict | None:
+        with self._relogin_progress_lock:
+            progress = self._relogin_progress.get(progress_id)
+            return dict(progress) if progress else None
+
+    def refresh_accounts(self, access_tokens: list[str], progress_id: str | None = None) -> dict[str, Any]:
         access_tokens = list(dict.fromkeys(token for token in access_tokens if token))
         if not access_tokens:
-            return {"refreshed": 0, "errors": [], "items": self.list_accounts()}
+            items = self.list_accounts()
+            result = {"refreshed": 0, "errors": [], "items": items, "relogined": 0}
+            if progress_id:
+                self.finish_refresh_progress(progress_id, result)
+            return result
 
         refreshed = 0
         errors = []
         max_workers = min(10, len(access_tokens))
 
+        if progress_id:
+            self.init_refresh_progress(progress_id, len(access_tokens))
+
         def _refresh_one(token: str) -> dict[str, Any] | None:
             current_token = self._refresh_one_by_source(token)
             return self.fetch_remote_info(current_token, "refresh_accounts")
 
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        executor = ThreadPoolExecutor(max_workers=max_workers)
+        try:
             futures = {
                 executor.submit(_refresh_one, token): token
                 for token in access_tokens
             }
             for future in as_completed(futures):
+                token = futures[future]
                 try:
                     account = future.result()
+                except (KeyboardInterrupt, SystemExit):
+                    executor.shutdown(wait=False, cancel_futures=True)
+                    raise
                 except Exception as exc:
-                    errors.append({"token": anonymize_token(futures[future]), "error": str(exc)})
-                    continue
-                if account is not None:
-                    refreshed += 1
+                    errors.append({"token": anonymize_token(token), "error": str(exc)})
+                else:
+                    if account is not None:
+                        refreshed += 1
 
-        return {
+                if progress_id:
+                    self.update_refresh_progress(progress_id, token)
+        except (KeyboardInterrupt, SystemExit):
+            if progress_id:
+                self.finish_refresh_progress(progress_id, error="cancelled")
+            executor.shutdown(wait=False, cancel_futures=True)
+            raise
+        else:
+            executor.shutdown(wait=True, cancel_futures=True)
+
+        relogined = 0
+        if config.auto_relogin:
+            for token in access_tokens:
+                account = self.get_account(token)
+                if not account:
+                    continue
+                status = str(account.get("status") or "").strip()
+                if status != "异常":
+                    continue
+                email = str(account.get("email") or "").strip()
+                password = str(account.get("password") or "").strip()
+                if not email or not password:
+                    continue
+                t = Thread(
+                    target=self._relogin_thread,
+                    args=(token, "auto_relogin_after_refresh"),
+                    daemon=True,
+                )
+                t.start()
+                relogined += 1
+
+        result = {
             "refreshed": refreshed,
             "errors": errors,
             "items": self.list_accounts(),
+            "relogined": relogined,
         }
+
+        if progress_id:
+            self.finish_refresh_progress(progress_id, result)
+
+        return result
+
+    def re_login_accounts(self, access_tokens: list[str], progress_id: str | None = None) -> dict[str, Any]:
+        access_tokens = list(dict.fromkeys(token for token in access_tokens if token))
+        if not access_tokens:
+            result: dict[str, Any] = {"relogined": 0, "skipped": 0, "errors": [], "items": self.list_accounts()}
+            if progress_id:
+                self.finish_relogin_progress(progress_id, result)
+            return result
+
+        if progress_id:
+            self.init_relogin_progress(progress_id, len(access_tokens))
+
+        relogined = 0
+        skipped = 0
+        errors: list[dict[str, str]] = []
+
+        for token in access_tokens:
+            account = self.get_account(token)
+            if not account:
+                errors.append({"token": anonymize_token(token), "error": "账号不存在"})
+                if progress_id:
+                    self.update_relogin_progress(progress_id, token, "跳过", "账号不存在")
+                continue
+
+            email = str(account.get("email") or "").strip()
+            password = str(account.get("password") or "").strip()
+            if not email or not password:
+                skipped += 1
+                if progress_id:
+                    self.update_relogin_progress(progress_id, token, "跳过", "无邮箱密码")
+                continue
+
+            t = Thread(
+                target=self._relogin_thread,
+                args=(token, "manual_relogin", progress_id),
+                daemon=True,
+            )
+            t.start()
+            relogined += 1
+
+        result = {
+            "relogined": relogined,
+            "skipped": skipped,
+            "errors": errors,
+            "items": self.list_accounts(),
+        }
+        if progress_id and relogined == 0:
+            self.finish_relogin_progress(progress_id, result)
+        return result
+
+    def _relogin_thread(self, access_token: str, event: str, progress_id: str | None = None) -> None:
+        account = self.get_account(access_token)
+        if not account:
+            if progress_id:
+                self.update_relogin_progress(progress_id, access_token, "异常", "账号不存在")
+            return
+        email = str(account.get("email") or "").strip()
+        password = str(account.get("password") or "").strip()
+        if not email or not password:
+            if progress_id:
+                self.update_relogin_progress(progress_id, access_token, "跳过", "无邮箱密码")
+            return
+        try:
+            from services.register.openai_register import relogin_for_tokens, AccountDeactivatedError
+            mailbox_data = account.get("mailbox_data") if isinstance(account.get("mailbox_data"), dict) else None
+            login_tokens = relogin_for_tokens(email, password, mailbox_data)
+            if login_tokens and login_tokens.get("access_token"):
+                updates: dict[str, Any] = {"access_token": login_tokens["access_token"]}
+                if login_tokens.get("refresh_token"):
+                    updates["refresh_token"] = login_tokens["refresh_token"]
+                if login_tokens.get("id_token"):
+                    updates["id_token"] = login_tokens["id_token"]
+                self._swap_access_token(access_token, updates)
+                self.update_account(login_tokens["access_token"], {"status": "正常"}, quiet=True)
+                log_service.add(LOG_TYPE_ACCOUNT, "重新登录成功",
+                                {"source": event, "email": email, "token": anonymize_token(access_token)})
+                if progress_id:
+                    self.update_relogin_progress(progress_id, access_token, "成功")
+            else:
+                self.remove_invalid_token(access_token, f"{event}:relogin_failed", quiet=True)
+                log_service.add(LOG_TYPE_ACCOUNT, "重新登录失败",
+                                {"source": event, "email": email, "token": anonymize_token(access_token)})
+                if progress_id:
+                    self.update_relogin_progress(progress_id, access_token, "异常", "登录未返回token")
+        except Exception as exc:
+            from services.register.openai_register import AccountDeactivatedError
+            if isinstance(exc, AccountDeactivatedError):
+                self.update_account(access_token, {"status": "异常", "quota": 0,
+                                                   "status_reason": "账号已被 OpenAI 封禁(account_deactivated)"}, quiet=True)
+                log_service.add(LOG_TYPE_ACCOUNT, "账号已停用",
+                                {"source": event, "email": email, "token": anonymize_token(access_token)})
+                if progress_id:
+                    self.update_relogin_progress(progress_id, access_token, "禁用")
+            else:
+                self.remove_invalid_token(access_token, f"{event}:relogin_exception", quiet=True)
+                log_service.add(LOG_TYPE_ACCOUNT, "重新登录异常",
+                                {"source": event, "email": email, "error": str(exc), "token": anonymize_token(access_token)})
+                if progress_id:
+                    self.update_relogin_progress(progress_id, access_token, "异常", str(exc))
 
 
     def get_stats(self) -> dict:

@@ -12,6 +12,7 @@ import {
   Download,
   Info,
   LoaderCircle,
+  LogIn,
   Pencil,
   RefreshCw,
   Search,
@@ -44,11 +45,16 @@ import {
   deleteAccounts,
   exportAccounts,
   fetchAccounts,
+  fetchRefreshProgress,
+  fetchReLoginProgress,
+  reLoginAccounts,
   refreshAccounts,
   updateAccount,
   type Account,
   type AccountExportFormat,
+  type AccountRefreshResponse,
   type AccountStatus,
+  type RefreshProgressResponse,
 } from "@/lib/api";
 import { useAuthGuard } from "@/lib/use-auth-guard";
 import { formatTime } from "@/lib/format-time";
@@ -211,9 +217,19 @@ function AccountsPageContent() {
   const [editStatus, setEditStatus] = useState<AccountStatus>("正常");
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [refreshingTokens, setRefreshingTokens] = useState<Set<string>>(new Set());
   const [isDeleting, setIsDeleting] = useState(false);
   const [isUpdating, setIsUpdating] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
+  const [isRelogining, setIsRelogining] = useState(false);
+  const [progress, setProgress] = useState<{
+    visible: boolean;
+    current: number;
+    total: number;
+    message: string;
+    email: string;
+  }>({ visible: false, current: 0, total: 0, message: "", email: "" });
+  const [refreshSummary, setRefreshSummary] = useState<Record<string, number | string> | null>(null);
   const [detailToken, setDetailToken] = useState<string | null>(null);
 
   const loadAccounts = async (silent = false) => {
@@ -349,30 +365,230 @@ function AccountsPageContent() {
     }
   };
 
+  const pollRefreshProgress = async (
+    progressId: string,
+    onUpdate: (p: RefreshProgressResponse) => void,
+  ): Promise<void> => {
+    return new Promise<void>((resolve, reject) => {
+      const timer = setInterval(async () => {
+        try {
+          const p = await fetchRefreshProgress(progressId);
+          if (p.done) {
+            clearInterval(timer);
+            if (p.error) {
+              reject(new Error(p.error));
+            } else {
+              onUpdate(p);
+              resolve();
+            }
+          }
+        } catch (err) {
+          clearInterval(timer);
+          reject(err);
+        }
+      }, 500);
+    });
+  };
+
   const handleRefreshAccounts = async (accessTokens: string[]) => {
     if (accessTokens.length === 0) {
       toast.error("没有需要刷新的账户");
       return;
     }
 
+    if (accessTokens.length === 1) {
+      setRefreshingTokens((prev) => new Set([...prev, accessTokens[0]]));
+      try {
+        const { progress_id } = await refreshAccounts(accessTokens);
+        await pollRefreshProgress(progress_id, (p) => {
+          if (p.done && p.result) {
+            setAccounts(p.result.items);
+            setSelectedIds((prev) => prev.filter((id) => p.result!.items.some((item) => item.access_token === id)));
+          }
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "刷新账户失败";
+        toast.error(message);
+      } finally {
+        setRefreshingTokens((prev) => {
+          const next = new Set(prev);
+          next.delete(accessTokens[0]);
+          return next;
+        });
+      }
+      return;
+    }
+
     setIsRefreshing(true);
+
+    const selectedTokenSet = new Set(accessTokens);
+    const baseAccountsList = accounts.filter((a) => !selectedTokenSet.has(a.access_token));
+    const baseActive = baseAccountsList.filter((a) => a.status === "正常").length;
+    const baseLimited = baseAccountsList.filter((a) => a.status === "限流").length;
+    const baseAbnormal = baseAccountsList.filter((a) => a.status === "异常").length;
+    const baseDisabled = baseAccountsList.filter((a) => a.status === "禁用").length;
+    const baseNormalAccounts = baseAccountsList.filter((a) => a.status === "正常");
+    const baseHasUnlimited = baseNormalAccounts.some(isUnlimitedImageQuotaAccount);
+    const baseHasUnknown = baseNormalAccounts.some(imageQuotaUnknown);
+    const baseQuotaNum = baseNormalAccounts.reduce((s, a) => s + Math.max(0, a.quota), 0);
+
+    const total = accessTokens.length;
+    setProgress({ visible: true, current: 0, total, message: "正在刷新账号信息...", email: "" });
+
     try {
-      const data = await refreshAccounts(accessTokens);
+      const { progress_id } = await refreshAccounts(accessTokens);
+
+      const data = await new Promise<AccountRefreshResponse>((resolve, reject) => {
+        const pollTimer = setInterval(async () => {
+          try {
+            const p = await fetchRefreshProgress(progress_id);
+            if (p.done) {
+              clearInterval(pollTimer);
+              if (p.error) {
+                reject(new Error(p.error));
+                return;
+              }
+              if (!p.result) {
+                reject(new Error("刷新结果为空"));
+                return;
+              }
+              setProgress((prev) => ({ ...prev, current: prev.total, message: "刷新完成" }));
+              setRefreshSummary(null);
+              resolve(p.result);
+            } else {
+              setProgress((prev) => ({ ...prev, current: p.processed }));
+              const runningActive = baseActive + ((p.status_counts?.["正常"]) ?? 0);
+              const runningLimited = baseLimited + ((p.status_counts?.["限流"]) ?? 0);
+              const runningAbnormal = baseAbnormal + ((p.status_counts?.["异常"]) ?? 0);
+              const runningDisabled = baseDisabled + ((p.status_counts?.["禁用"]) ?? 0);
+              let runningQuota: string | number;
+              if (baseHasUnlimited) {
+                runningQuota = "∞";
+              } else if (baseHasUnknown) {
+                runningQuota = "未知";
+              } else {
+                runningQuota = formatCompact(baseQuotaNum + (p.total_quota ?? 0));
+              }
+              setRefreshSummary({
+                total: accounts.length,
+                active: runningActive,
+                limited: runningLimited,
+                abnormal: runningAbnormal,
+                disabled: runningDisabled,
+                quota: runningQuota,
+              });
+            }
+          } catch (err) {
+            clearInterval(pollTimer);
+            reject(err);
+          }
+        }, 300);
+      });
+
       setAccounts(data.items);
       setSelectedIds((prev) => prev.filter((id) => data.items.some((item) => item.access_token === id)));
-      if (data.errors.length > 0) {
-        const firstError = data.errors[0]?.error;
+
+      const relogined = data.relogined ?? 0;
+
+      setProgress({ visible: true, current: total, total, message: "刷新完成", email: "" });
+      setTimeout(() => setProgress({ visible: false, current: 0, total: 0, message: "", email: "" }), 800);
+
+      if ((data.errors ?? []).length > 0) {
+        const firstError = data.errors?.[0]?.error;
         toast.error(
-          `刷新成功 ${data.refreshed} 个，失败 ${data.errors.length} 个${firstError ? `，首个错误：${firstError}` : ""}`,
+          `刷新成功 ${data.refreshed} 个，失败 ${(data.errors ?? []).length} 个${firstError ? `，首个错误：${firstError}` : ""}`,
         );
       } else {
-        toast.success(`刷新成功 ${data.refreshed} 个账户`);
+        toast.success(`刷新成功 ${data.refreshed} 个账户${relogined > 0 ? `，已触发 ${relogined} 个账号重新登录` : ""}`);
       }
     } catch (error) {
+      setProgress({ visible: false, current: 0, total: 0, message: "", email: "" });
+      setRefreshSummary(null);
       const message = error instanceof Error ? error.message : "刷新账户失败";
       toast.error(message);
     } finally {
       setIsRefreshing(false);
+    }
+  };
+
+  const handleReLogin = async (accessTokens: string[]) => {
+    if (accessTokens.length === 0) {
+      toast.error("请先选择要恢复的账户");
+      return;
+    }
+
+    const abnormalTokens_ = accessTokens.filter((token) => {
+      const account = accounts.find((a) => a.access_token === token);
+      return account?.status === "异常";
+    });
+
+    if (abnormalTokens_.length === 0) {
+      toast.error("选中账号中没有异常账号");
+      return;
+    }
+
+    if (abnormalTokens_.length < accessTokens.length) {
+      toast.info(`已过滤 ${accessTokens.length - abnormalTokens_.length} 个非异常账号`);
+    }
+
+    setIsRelogining(true);
+    const total = abnormalTokens_.length;
+    setProgress({ visible: true, current: 0, total, message: "正在尝试恢复异常账号...", email: "" });
+
+    try {
+      const { progress_id } = await reLoginAccounts(abnormalTokens_);
+
+      await new Promise<void>((resolve, reject) => {
+        const pollTimer = setInterval(async () => {
+          try {
+            const p = await fetchReLoginProgress(progress_id);
+            if (p.done) {
+              clearInterval(pollTimer);
+              if (p.error) {
+                reject(new Error(p.error));
+                return;
+              }
+              setProgress((prev) => ({ ...prev, current: prev.total, message: "恢复流程已完成" }));
+              setRefreshSummary(null);
+              resolve();
+            } else {
+              const results = p.results ?? [];
+              const lastErrorResult = [...results].reverse().find((r) => r.error);
+              const emailHint = lastErrorResult
+                ? `失败: ${lastErrorResult.token} ${lastErrorResult.error ?? ""}`
+                : `已处理 ${p.processed}/${p.total}`;
+              setProgress((prev) => ({
+                ...prev,
+                current: p.processed,
+                email: emailHint,
+                message: "正在尝试恢复异常账号...",
+              }));
+            }
+          } catch (err) {
+            clearInterval(pollTimer);
+            reject(err);
+          }
+        }, 300);
+      });
+
+      await new Promise<void>((resolve) => setTimeout(resolve, 500));
+      try {
+        const freshData = await fetchAccounts();
+        setAccounts(freshData.items);
+        setSelectedIds((prev) => prev.filter((id) => freshData.items.some((item) => item.access_token === id)));
+      } catch { /* 静默失败 */ }
+
+      setProgress({ visible: true, current: total, total, message: "恢复完成", email: "" });
+      setTimeout(() => setProgress({ visible: false, current: 0, total: 0, message: "", email: "" }), 800);
+
+      toast.success("恢复流程已全部完成");
+    } catch (error) {
+      setProgress({ visible: false, current: 0, total: 0, message: "", email: "" });
+      setRefreshSummary(null);
+      const message = error instanceof Error ? error.message : "重新登录失败";
+      toast.error(message);
+    } finally {
+      setIsRelogining(false);
     }
   };
 
@@ -488,6 +704,28 @@ function AccountsPageContent() {
         </div>
       </section>
 
+      {progress.visible && (
+        <div className="overflow-hidden rounded-2xl border border-stone-200 bg-white/90 shadow-sm">
+          <div className="px-4 py-3">
+            <div className="flex items-center justify-between text-sm">
+              <span className="text-stone-600">
+                {progress.message}
+                {progress.email && <span className="ml-1 font-medium text-stone-700">{progress.email}</span>}
+              </span>
+              <span className="font-medium text-stone-700">
+                {progress.current}/{progress.total}
+              </span>
+            </div>
+            <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-stone-100">
+              <div
+                className="h-full rounded-full bg-gradient-to-r from-amber-400 to-orange-500 transition-all duration-300 ease-out"
+                style={{ width: `${progress.total > 0 ? (progress.current / progress.total) * 100 : 0}%` }}
+              />
+            </div>
+          </div>
+        </div>
+      )}
+
       <Dialog open={Boolean(editingAccount)} onOpenChange={(open) => (!open ? setEditingAccount(null) : null)}>
         <DialogContent showCloseButton={false} className="rounded-2xl p-6">
           <DialogHeader className="gap-2">
@@ -540,7 +778,7 @@ function AccountsPageContent() {
         <div className="grid gap-3 md:grid-cols-3 xl:grid-cols-6">
           {metricCards.map((item) => {
             const Icon = item.icon;
-            const value = summary[item.key];
+            const value = (refreshSummary ?? summary)[item.key];
             return (
               <Card key={item.key} className="rounded-2xl border-white/80 bg-white/90 shadow-sm">
                 <CardContent className="p-4">
@@ -708,6 +946,16 @@ function AccountsPageContent() {
                 </Button>
                 <Button
                   variant="ghost"
+                  className="h-8 rounded-lg px-3 text-amber-600 hover:bg-amber-50 hover:text-amber-700"
+                  onClick={() => void handleReLogin(selectedTokens)}
+                  disabled={selectedTokens.length === 0 || isRelogining}
+                  title="尝试密码登录恢复账号"
+                >
+                  {isRelogining ? <LoaderCircle className="size-4 animate-spin" /> : <LogIn className="size-4" />}
+                  尝试恢复异常账号
+                </Button>
+                <Button
+                  variant="ghost"
                   className="h-8 rounded-lg px-3 text-rose-500 hover:bg-rose-50 hover:text-rose-600"
                   onClick={() => void handleDeleteTokens(abnormalTokens)}
                   disabled={abnormalTokens.length === 0 || isDeleting}
@@ -851,9 +1099,9 @@ function AccountsPageContent() {
                               type="button"
                               className="rounded-lg p-2 transition hover:bg-stone-100 hover:text-stone-700"
                               onClick={() => void handleRefreshAccounts([account.access_token])}
-                              disabled={isRefreshing}
+                              disabled={isRefreshing || refreshingTokens.has(account.access_token)}
                             >
-                              <RefreshCw className={cn("size-4", isRefreshing ? "animate-spin" : "")} />
+                              <RefreshCw className={cn("size-4", (isRefreshing || refreshingTokens.has(account.access_token)) ? "animate-spin" : "")} />
                             </button>
                             <button
                               type="button"
