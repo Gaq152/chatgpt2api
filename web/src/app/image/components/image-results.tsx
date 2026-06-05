@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import { Clock3, Download, LoaderCircle, RotateCcw, Sparkles, Trash2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -218,24 +218,19 @@ export function ImageResults({
                             key={image.id}
                             className="break-inside-avoid"
                           >
-                            <button
-                              type="button"
-                              onClick={() => onOpenLightbox(successfulTurnImages, currentIndex)}
+                            <LazyImage
+                              src={imageSrc}
+                              alt={`Generated result ${index + 1}`}
                               className="group block aspect-square w-full cursor-zoom-in overflow-hidden rounded-xl sm:aspect-auto"
-                            >
-                              <img
-                                src={imageSrc}
-                                alt={`Generated result ${index + 1}`}
-                                className="block h-full w-full object-cover transition duration-200 group-hover:brightness-90 sm:h-auto sm:object-contain"
-                                onLoad={(event) => {
-                                  updateImageDimensions(
-                                    image.id,
-                                    event.currentTarget.naturalWidth,
-                                    event.currentTarget.naturalHeight,
-                                  );
-                                }}
-                              />
-                            </button>
+                              onLoad={(event) => {
+                                updateImageDimensions(
+                                  image.id,
+                                  event.currentTarget.naturalWidth,
+                                  event.currentTarget.naturalHeight,
+                                );
+                              }}
+                              onOpen={() => onOpenLightbox(successfulTurnImages, currentIndex)}
+                            />
                             <div className="flex flex-col gap-1 px-0.5 py-1 text-[10px] sm:flex-row sm:items-center sm:justify-between sm:gap-2 sm:px-3 sm:py-3 sm:text-xs">
                               <div className="min-w-0 text-stone-500">
                                 <span>结果 {index + 1}</span>
@@ -387,3 +382,47 @@ function formatBase64ImageSize(base64: string) {
 function formatImageDimensions(width: number, height: number) {
   return `${width} x ${height}`;
 }
+
+const LazyImage = memo(function LazyImage({ src, alt, className, onLoad, onOpen }: {
+  src: string;
+  alt: string;
+  className: string;
+  onLoad?: (event: React.SyntheticEvent<HTMLImageElement>) => void;
+  onOpen?: () => void;
+}) {
+  const [isVisible, setIsVisible] = useState(false);
+  const imgRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const element = imgRef.current;
+    if (!element) return;
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (entry.isIntersecting) {
+          setIsVisible(true);
+          observer.disconnect();
+        }
+      },
+      { rootMargin: "400px" },
+    );
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
+
+  return (
+    <div ref={imgRef} className="relative">
+      {isVisible ? (
+        <button type="button" onClick={onOpen} className={className}>
+          <img
+            src={src}
+            alt={alt}
+            className="block h-full w-full object-cover transition duration-200 group-hover:brightness-90 sm:h-auto sm:object-contain"
+            onLoad={onLoad}
+          />
+        </button>
+      ) : (
+        <div className={`animate-pulse rounded-xl bg-stone-100 min-h-[200px] sm:min-h-[280px] ${className}`} />
+      )}
+    </div>
+  );
+});
