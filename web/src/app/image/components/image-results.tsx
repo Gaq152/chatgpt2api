@@ -1,7 +1,7 @@
 "use client";
 
-import { memo, useEffect, useRef, useState } from "react";
-import { Clock3, Download, EyeOff, LoaderCircle, RotateCcw, Sparkles, Trash2 } from "lucide-react";
+import { memo, useCallback, useEffect, useRef, useState } from "react";
+import { Clock3, Download, EyeOff, ImageOff, LoaderCircle, RefreshCw, RotateCcw, Sparkles, Trash2, TriangleAlert } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -203,29 +203,16 @@ export function ImageResults({
                       <div className="mb-3 text-xs font-medium text-stone-500">本轮参考图</div>
                       <div className="flex flex-wrap justify-end gap-3">
                         {turn.referenceImages.map((image, index) => (
-                          <div key={`${turn.id}-${image.name}-${index}`} className="flex flex-col items-end gap-2">
-                            <button
-                              type="button"
-                              onClick={() => onOpenLightbox(referenceLightboxImages, index)}
-                              className="group relative h-24 w-24 overflow-hidden border border-stone-200/80 bg-stone-100/60 text-left transition hover:border-stone-300"
-                              aria-label={`预览参考图 ${image.name || index + 1}`}
-                            >
-                              <img
-                                src={image.dataUrl || image.url || ""}
-                                alt={image.name || `参考图 ${index + 1}`}
-                                className="absolute inset-0 h-full w-full object-cover transition duration-200 group-hover:scale-[1.02]"
-                              />
-                            </button>
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              className="rounded-full border-stone-200 bg-white text-stone-700 hover:bg-stone-50"
-                              onClick={() => onContinueEdit(selectedConversation.id, image)}
-                            >
-                              <Sparkles className="size-4" />
-                              加入编辑
-                            </Button>
-                          </div>
+                          <ReferenceImageCard
+                            key={`${turn.id}-${image.name}-${index}`}
+                            image={image}
+                            index={index}
+                            turnId={turn.id}
+                            conversationId={selectedConversation.id}
+                            referenceLightboxImages={referenceLightboxImages}
+                            onOpenLightbox={onOpenLightbox}
+                            onContinueEdit={onContinueEdit}
+                          />
                         ))}
                       </div>
                     </div>
@@ -245,57 +232,21 @@ export function ImageResults({
                       if (image.status === "success" && imageSrc) {
                         const currentIndex = successfulTurnImages.findIndex((item) => item.id === image.id);
                         const sizeLabel = image.b64_json ? formatBase64ImageSize(image.b64_json) : "";
-                        const dimensions = imageDimensionsRef.current[image.id];
-                        const imageMeta = [sizeLabel, dimensions].filter(Boolean).join(" · ");
 
                         return (
-                          <div
+                          <ResultImageCard
                             key={image.id}
-                            className="break-inside-avoid"
-                          >
-                            <LazyImage
-                              src={imageSrc}
-                              alt={`Generated result ${index + 1}`}
-                              className="group block aspect-square w-full cursor-zoom-in overflow-hidden rounded-xl sm:aspect-auto"
-                              onLoad={(event) => {
-                                updateImageDimensions(
-                                  image.id,
-                                  event.currentTarget.naturalWidth,
-                                  event.currentTarget.naturalHeight,
-                                );
-                              }}
-                              onOpen={() => onOpenLightbox(successfulTurnImages, currentIndex)}
-                            />
-                            <div className="flex flex-col gap-1 px-0.5 py-1 text-[10px] sm:flex-row sm:items-center sm:justify-between sm:gap-2 sm:px-3 sm:py-3 sm:text-xs">
-                              <div className="min-w-0 text-stone-500">
-                                <span>结果 {index + 1}</span>
-                                {image.durationMs != null ? <span className="text-stone-400 sm:ml-2">{formatDuration(image.durationMs)}</span> : null}
-                                {imageMeta ? <span className="block text-stone-400">{imageMeta}</span> : null}
-                              </div>
-                              <div className="flex items-center gap-1.5">
-                                <Button
-                                  variant="outline"
-                                  size="sm"
-                                  className="h-7 w-7 rounded-full border-stone-200 bg-white px-0 text-[10px] text-stone-700 hover:bg-stone-50 sm:h-8 sm:w-fit sm:px-3 sm:text-xs"
-                                  onClick={() => onContinueEdit(selectedConversation.id, image)}
-                                  aria-label="加入编辑"
-                                >
-                                  <Sparkles className="size-3 sm:size-4" />
-                                  <span className="hidden sm:inline">加入编辑</span>
-                                </Button>
-                                <Button
-                                  variant="outline"
-                                  size="sm"
-                                  className="h-7 w-7 rounded-full border-stone-200 bg-white px-0 text-[10px] text-stone-700 hover:bg-stone-50 sm:h-8 sm:w-fit sm:px-3 sm:text-xs"
-                                  onClick={() => void downloadStoredImage(image, index)}
-                                  aria-label="下载"
-                                >
-                                  <Download className="size-3 sm:size-4" />
-                                  <span className="hidden sm:inline">下载</span>
-                                </Button>
-                              </div>
-                            </div>
-                          </div>
+                            image={image}
+                            index={index}
+                            imageSrc={imageSrc}
+                            sizeLabel={sizeLabel}
+                            conversationId={selectedConversation.id}
+                            successfulTurnImages={successfulTurnImages}
+                            currentIndex={currentIndex}
+                            onLoad={(width, height) => updateImageDimensions(image.id, width, height)}
+                            onOpenLightbox={onOpenLightbox}
+                            onContinueEdit={onContinueEdit}
+                          />
                         );
                       }
 
@@ -496,11 +447,218 @@ function formatImageDimensions(width: number, height: number) {
   return `${width} x ${height}`;
 }
 
-const LazyImage = memo(function LazyImage({ src, alt, className, onLoad, onOpen }: {
+type ImageLoadState = "ok" | "loading" | "expired" | "error";
+
+function useImageLoadState(src: string) {
+  const [state, setState] = useState<ImageLoadState>("loading");
+  const [retryKey, setRetryKey] = useState(0);
+
+  const handleLoad = useCallback(() => setState("ok"), []);
+
+  const handleError = useCallback(() => {
+    if (!src) {
+      setState("expired");
+      return;
+    }
+    const url = src.startsWith("data:") ? null : src.startsWith("blob:") ? null : src;
+    if (!url) {
+      setState("error");
+      return;
+    }
+    fetch(url, { method: "HEAD" })
+      .then((res) => setState(res.status === 404 ? "expired" : "error"))
+      .catch(() => setState("error"));
+  }, [src]);
+
+  const retry = useCallback(() => {
+    setState("loading");
+    setRetryKey((k) => k + 1);
+  }, []);
+
+  return { state, retryKey, handleLoad, handleError, retry };
+}
+
+function ImagePlaceholder({ state, className, onRetry }: {
+  state: "expired" | "error";
+  className?: string;
+  onRetry?: () => void;
+}) {
+  const isExpired = state === "expired";
+  return (
+    <div className={cn(
+      "flex flex-col items-center justify-center gap-2 rounded-xl border",
+      isExpired ? "border-stone-200 bg-stone-50 text-stone-400" : "border-amber-200 bg-amber-50 text-amber-500",
+      className,
+    )}>
+      {isExpired
+        ? <ImageOff className="size-5 sm:size-7" />
+        : <TriangleAlert className="size-5 sm:size-7" />
+      }
+      <span className="text-[11px] sm:text-xs">{isExpired ? "图片已过期" : "加载失败"}</span>
+      {!isExpired && onRetry && (
+        <button
+          type="button"
+          onClick={onRetry}
+          className="inline-flex items-center gap-1 rounded-full bg-white px-2 py-0.5 text-[10px] font-medium text-amber-600 shadow-sm transition hover:bg-amber-100 sm:text-xs"
+        >
+          <RefreshCw className="size-3" />
+          重试
+        </button>
+      )}
+    </div>
+  );
+}
+
+function ReferenceImageCard({ image, index, turnId, conversationId, referenceLightboxImages, onOpenLightbox, onContinueEdit }: {
+  image: StoredReferenceImage;
+  index: number;
+  turnId: string;
+  conversationId: string;
+  referenceLightboxImages: ImageLightboxItem[];
+  onOpenLightbox: (images: ImageLightboxItem[], index: number) => void;
+  onContinueEdit: (conversationId: string, image: StoredReferenceImage) => void;
+}) {
+  const src = image.dataUrl || image.url || "";
+  const { state, retryKey, handleLoad, handleError, retry } = useImageLoadState(src);
+
+  if (!src || state === "expired") {
+    return (
+      <div key={`${turnId}-${image.name}-${index}`} className="flex flex-col items-end gap-2">
+        <ImagePlaceholder state="expired" className="h-24 w-24" />
+      </div>
+    );
+  }
+
+  if (state === "error") {
+    return (
+      <div key={`${turnId}-${image.name}-${index}`} className="flex flex-col items-end gap-2">
+        <ImagePlaceholder state="error" className="h-24 w-24" onRetry={retry} />
+      </div>
+    );
+  }
+
+  return (
+    <div key={`${turnId}-${image.name}-${index}`} className="flex flex-col items-end gap-2">
+      <button
+        type="button"
+        onClick={() => onOpenLightbox(referenceLightboxImages, index)}
+        className="group relative h-24 w-24 overflow-hidden border border-stone-200/80 bg-stone-100/60 text-left transition hover:border-stone-300"
+        aria-label={`预览参考图 ${image.name || index + 1}`}
+      >
+        <img
+          key={retryKey}
+          src={src}
+          alt={image.name || `参考图 ${index + 1}`}
+          className={cn(
+            "absolute inset-0 h-full w-full object-cover transition duration-200 group-hover:scale-[1.02]",
+            state === "loading" && "invisible",
+          )}
+          onLoad={handleLoad}
+          onError={handleError}
+        />
+        {state === "loading" && (
+          <div className="absolute inset-0 animate-pulse bg-stone-100" />
+        )}
+      </button>
+      <Button
+        variant="outline"
+        size="sm"
+        className="rounded-full border-stone-200 bg-white text-stone-700 hover:bg-stone-50"
+        onClick={() => onContinueEdit(conversationId, image)}
+      >
+        <Sparkles className="size-4" />
+        加入编辑
+      </Button>
+    </div>
+  );
+}
+
+function ResultImageCard({ image, index, imageSrc, sizeLabel, conversationId, successfulTurnImages, currentIndex, onLoad, onOpenLightbox, onContinueEdit }: {
+  image: StoredImage;
+  index: number;
+  imageSrc: string;
+  sizeLabel: string;
+  conversationId: string;
+  successfulTurnImages: ImageLightboxItem[];
+  currentIndex: number;
+  onLoad: (width: number, height: number) => void;
+  onOpenLightbox: (images: ImageLightboxItem[], index: number) => void;
+  onContinueEdit: (conversationId: string, image: StoredImage) => void;
+}) {
+  const { state, retryKey, handleLoad: onImgLoad, handleError, retry } = useImageLoadState(imageSrc);
+  const [dimensions, setDimensions] = useState<string>();
+
+  const handleLoad = useCallback((event: React.SyntheticEvent<HTMLImageElement>) => {
+    const { naturalWidth, naturalHeight } = event.currentTarget;
+    onLoad(naturalWidth, naturalHeight);
+    setDimensions(formatImageDimensions(naturalWidth, naturalHeight));
+    onImgLoad();
+  }, [onLoad, onImgLoad]);
+
+  if (state === "expired" || state === "error") {
+    return (
+      <div className="break-inside-avoid">
+        <ImagePlaceholder state={state} className="aspect-square sm:aspect-auto sm:min-h-[200px]" onRetry={state === "error" ? retry : undefined} />
+        <div className="px-0.5 py-1 text-[10px] text-stone-400 sm:px-3 sm:py-3 sm:text-xs">
+          <span>结果 {index + 1}</span>
+          {image.durationMs != null ? <span className="ml-2">{formatDuration(image.durationMs)}</span> : null}
+        </div>
+      </div>
+    );
+  }
+
+  const imageMeta = [sizeLabel, dimensions].filter(Boolean).join(" · ");
+
+  return (
+    <div className="break-inside-avoid">
+      <LazyImage
+        key={retryKey}
+        src={imageSrc}
+        alt={`Generated result ${index + 1}`}
+        className="group block aspect-square w-full cursor-zoom-in overflow-hidden rounded-xl sm:aspect-auto"
+        onLoad={handleLoad}
+        onError={handleError}
+        onOpen={() => onOpenLightbox(successfulTurnImages, currentIndex)}
+      />
+      <div className="flex flex-col gap-1 px-0.5 py-1 text-[10px] sm:flex-row sm:items-center sm:justify-between sm:gap-2 sm:px-3 sm:py-3 sm:text-xs">
+        <div className="min-w-0 text-stone-500">
+          <span>结果 {index + 1}</span>
+          {image.durationMs != null ? <span className="text-stone-400 sm:ml-2">{formatDuration(image.durationMs)}</span> : null}
+          {imageMeta ? <span className="block text-stone-400">{imageMeta}</span> : null}
+        </div>
+        <div className="flex items-center gap-1.5">
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-7 w-7 rounded-full border-stone-200 bg-white px-0 text-[10px] text-stone-700 hover:bg-stone-50 sm:h-8 sm:w-fit sm:px-3 sm:text-xs"
+            onClick={() => onContinueEdit(conversationId, image)}
+            aria-label="加入编辑"
+          >
+            <Sparkles className="size-3 sm:size-4" />
+            <span className="hidden sm:inline">加入编辑</span>
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-7 w-7 rounded-full border-stone-200 bg-white px-0 text-[10px] text-stone-700 hover:bg-stone-50 sm:h-8 sm:w-fit sm:px-3 sm:text-xs"
+            onClick={() => void downloadStoredImage(image, index)}
+            aria-label="下载"
+          >
+            <Download className="size-3 sm:size-4" />
+            <span className="hidden sm:inline">下载</span>
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const LazyImage = memo(function LazyImage({ src, alt, className, onLoad, onError, onOpen }: {
   src: string;
   alt: string;
   className: string;
   onLoad?: (event: React.SyntheticEvent<HTMLImageElement>) => void;
+  onError?: () => void;
   onOpen?: () => void;
 }) {
   const [isVisible, setIsVisible] = useState(false);
@@ -531,6 +689,7 @@ const LazyImage = memo(function LazyImage({ src, alt, className, onLoad, onOpen 
             alt={alt}
             className="block h-full w-full object-cover transition duration-200 group-hover:brightness-90 sm:h-auto sm:object-contain"
             onLoad={onLoad}
+            onError={onError}
           />
         </button>
       ) : (

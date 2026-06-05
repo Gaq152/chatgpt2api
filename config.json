@@ -49,5 +49,6 @@
   "image_account_concurrency": 3,
   "image_settle_enabled": false,
   "image_check_before_hit_enabled": false,
-  "image_settle_secs": 2
+  "image_settle_secs": 2,
+  "max_reference_images": 6
 }
