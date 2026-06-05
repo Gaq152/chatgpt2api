@@ -1,14 +1,17 @@
 import base64
 import hashlib
 import json
+import mimetypes
 import re
 import time
 import uuid
 from pathlib import Path
 from typing import Any, Iterator
+from urllib.parse import urlparse
 
 from curl_cffi import requests
 from fastapi import HTTPException
+from services.proxy_service import proxy_settings
 from utils.log import logger
 
 IMAGE_MODELS = {"gpt-image-2", "codex-gpt-image-2"}
@@ -18,6 +21,7 @@ SUPPORTED_JSON_IMAGE_MIME_TYPES = {"image/png", "image/jpeg", "image/jpg", "imag
 MAX_JSON_IMAGE_BYTES = 10 * 1024 * 1024
 MAX_JSON_EDIT_IMAGES = 10
 DATA_URL_IMAGE_RE = re.compile(r"^data:(?P<mime>[-+./\w]+);base64,(?P<data>.*)$", re.DOTALL)
+REMOTE_IMAGE_TIMEOUT_SECONDS = 20
 
 
 def _image_extension(mime_type: str) -> str:
@@ -289,12 +293,38 @@ def _resolve_image_url(value: object) -> str:
     return str(value or "").strip()
 
 
-def _decode_data_url(url: str) -> tuple[bytes, str] | None:
-    if not url.startswith("data:"):
+def _decode_image_url(url: str) -> tuple[bytes, str] | None:
+    if url.startswith("data:"):
+        header, _, data = url.partition(",")
+        mime = header.split(";")[0].removeprefix("data:") or "image/png"
+        return base64.b64decode(data), mime
+    if not url.startswith(("http://", "https://")):
         return None
-    header, _, data = url.partition(",")
-    mime = header.split(";")[0].removeprefix("data:") or "image/png"
-    return base64.b64decode(data), mime
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return None
+    try:
+        response = requests.get(
+            url,
+            headers={"Accept": "image/*,*/*;q=0.8", "User-Agent": "chatgpt2api vision fetcher"},
+            timeout=REMOTE_IMAGE_TIMEOUT_SECONDS,
+            allow_redirects=True,
+            **proxy_settings.build_session_kwargs(),
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail={"error": f"image_url fetch failed: {exc}"}) from exc
+    if not 200 <= response.status_code < 300:
+        raise HTTPException(status_code=400, detail={"error": f"image_url fetch failed: HTTP {response.status_code}"})
+    image_data = response.content
+    if not image_data or len(image_data) > MAX_JSON_IMAGE_BYTES:
+        raise HTTPException(status_code=400, detail={"error": "image_url empty or exceeds 10MB limit"})
+    mime = str(response.headers.get("content-type") or "image/png").split(";", 1)[0].lower()
+    guessed_mime = mimetypes.guess_type(parsed.path)[0] or ""
+    if not mime.startswith("image/") and guessed_mime.startswith("image/"):
+        mime = guessed_mime
+    if not mime.startswith("image/"):
+        mime = "image/png"
+    return image_data, mime
 
 
 def _decode_image_object(item: dict[str, object]) -> tuple[bytes, str] | None:
@@ -304,7 +334,7 @@ def _decode_image_object(item: dict[str, object]) -> tuple[bytes, str] | None:
     for key in ("image_url", "url"):
         url = _resolve_image_url(item.get(key))
         if url:
-            result = _decode_data_url(url)
+            result = _decode_image_url(url)
             if result:
                 return result
     for key in ("b64_json", "base64"):
@@ -330,7 +360,7 @@ def extract_image_from_message_content(content: object) -> list[tuple[bytes, str
         item_type = str(item.get("type") or "").strip()
         if item_type == "image_url":
             url = _resolve_image_url(item.get("image_url") or item.get("url") or item)
-            result = _decode_data_url(url)
+            result = _decode_image_url(url)
             if result:
                 images.append(result)
         elif item_type in {"input_image", "image"}:
