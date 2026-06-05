@@ -38,6 +38,12 @@ async def filter_or_log(call: LoggedCall, text: str) -> None:
 def create_router() -> APIRouter:
     router = APIRouter()
 
+    @router.get("/api/image-config")
+    async def get_image_config(authorization: str | None = Header(default=None)):
+        require_identity(authorization)
+        from services.config import config
+        return {"max_reference_images": config.max_reference_images}
+
     @router.get("/api/image-tasks")
     async def list_image_tasks(
         ids: str = Query(default=""),

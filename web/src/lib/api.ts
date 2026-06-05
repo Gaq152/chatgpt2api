@@ -116,7 +116,6 @@ export type SettingsConfig = {
   image_retention_days?: number | string;
   image_poll_timeout_secs?: number | string;
   image_account_concurrency?: number | string;
-  max_reference_images?: number | string;
   auto_remove_invalid_accounts?: boolean;
   auto_remove_rate_limited_accounts?: boolean;
   auto_relogin?: boolean;
@@ -507,6 +506,10 @@ export async function createImageEditTask(
     method: "POST",
     body: formData,
   });
+}
+
+export async function fetchImageConfig() {
+  return httpRequest<{ max_reference_images: number }>("/api/image-config");
 }
 
 export async function fetchImageTasks(ids: string[]) {

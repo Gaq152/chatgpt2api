@@ -310,6 +310,12 @@ class ConfigStore:
 
     @property
     def max_reference_images(self) -> int:
+        env_val = os.environ.get("MAX_REFERENCE_IMAGES")
+        if env_val:
+            try:
+                return max(1, int(env_val))
+            except (TypeError, ValueError):
+                pass
         try:
             return max(1, int(self.data.get("max_reference_images", 6)))
         except (TypeError, ValueError):

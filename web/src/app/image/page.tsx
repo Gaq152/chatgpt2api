@@ -21,6 +21,7 @@ import {
   createImageEditTask,
   createImageGenerationTask,
   fetchAccounts,
+  fetchImageConfig,
   fetchImageTasks,
   resumeImagePoll,
   fetchMyQuota,
@@ -402,7 +403,10 @@ function ImagePageContent({ isAdmin, subjectId }: { isAdmin: boolean; subjectId:
   const [imageModel, setImageModel] = useState<ImageModel>("gpt-image-2");
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
   const [referenceImageFiles, setReferenceImageFiles] = useState<File[]>([]);
+  const referenceImageFilesRef = useRef<File[]>([]);
+  referenceImageFilesRef.current = referenceImageFiles;
   const [referenceImages, setReferenceImages] = useState<StoredReferenceImage[]>([]);
+  const [maxReferenceImages, setMaxReferenceImages] = useState(6);
   const [conversations, setConversations] = useState<ImageConversation[]>([]);
   const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null);
   const [isLoadingHistory, setIsLoadingHistory] = useState(true);
@@ -591,6 +595,7 @@ function ImagePageContent({ isAdmin, subjectId }: { isAdmin: boolean; subjectId:
     };
 
     void loadQuota();
+    void fetchImageConfig().then((cfg) => setMaxReferenceImages(cfg.max_reference_images)).catch(() => {});
     window.addEventListener("focus", handleFocus);
     return () => {
       window.removeEventListener("focus", handleFocus);
@@ -845,16 +850,29 @@ function ImagePageContent({ isAdmin, subjectId }: { isAdmin: boolean; subjectId:
       return;
     }
 
+    const currentCount = referenceImageFilesRef.current.length;
+    const limit = maxReferenceImages;
+    const remaining = Math.max(0, limit - currentCount);
+    if (remaining === 0) {
+      toast.error(`最多上传 ${limit} 张参考图片`);
+      return;
+    }
+    let accepted = files;
+    if (files.length > remaining) {
+      accepted = files.slice(0, remaining);
+      toast.warning(`已达上限，仅添加前 ${remaining} 张（最多 ${limit} 张）`);
+    }
+
     try {
       const previews = await Promise.all(
-        files.map(async (file) => ({
+        accepted.map(async (file) => ({
           name: file.name,
           type: file.type || "image/png",
           dataUrl: await readFileAsDataUrl(file),
         })),
       );
 
-      setReferenceImageFiles((prev) => [...prev, ...files]);
+      setReferenceImageFiles((prev) => [...prev, ...accepted]);
       setReferenceImages((prev) => [...prev, ...previews]);
       if (fileInputRef.current) {
         fileInputRef.current.value = "";
@@ -863,7 +881,7 @@ function ImagePageContent({ isAdmin, subjectId }: { isAdmin: boolean; subjectId:
       const message = error instanceof Error ? error.message : "读取参考图失败";
       toast.error(message);
     }
-  }, []);
+  }, [maxReferenceImages]);
 
   const handleReferenceImageChange = useCallback(
     async (files: File[]) => {
