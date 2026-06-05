@@ -34,16 +34,27 @@ function getStoredImageSrc(image: StoredImage) {
 }
 
 async function downloadStoredImage(image: StoredImage, index: number) {
-  let blob: Blob;
-  if (image.b64_json) {
-    const binary = atob(image.b64_json);
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-    blob = new Blob([bytes], { type: "image/png" });
-  } else if (image.url) {
-    const res = await fetch(image.url);
-    blob = await res.blob();
-  } else {
+  let blob: Blob | null = null;
+  try {
+    if (image.b64_json) {
+      const binary = atob(image.b64_json);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      blob = new Blob([bytes], { type: "image/png" });
+    } else if (image.url) {
+      const url = image.url.startsWith("http") ? image.url : `${window.location.origin}${image.url}`;
+      const res = await fetch(url);
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+      }
+      blob = await res.blob();
+    } else {
+      return;
+    }
+  } catch {
+    if (image.url) {
+      window.open(image.url, "_blank");
+    }
     return;
   }
   const url = URL.createObjectURL(blob);
