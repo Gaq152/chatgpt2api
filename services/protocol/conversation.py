@@ -616,9 +616,16 @@ def stream_image_outputs_with_pool(request: ConversationRequest) -> Iterator[Ima
     if str(request.model or "").strip() not in IMAGE_MODELS:
         raise ImageGenerationError("unsupported image model,supported models: " + ", ".join(IMAGE_MODELS))
 
+    MAX_POLL_TIMEOUT_RETRIES = 4
+    MAX_CONN_TIMEOUT_RETRIES = 3
+    MAX_TLS_RETRIES = 3
+
     emitted = False
     last_error = ""
     for index in range(1, request.n + 1):
+        poll_timeout_retry_count = 0
+        conn_timeout_retry_count = 0
+        tls_retry_count = 0
         while True:
             try:
                 token = account_service.get_available_access_token()
@@ -651,6 +658,12 @@ def stream_image_outputs_with_pool(request: ConversationRequest) -> Iterator[Ima
                 account_service.mark_image_result(token, True)
                 break
             except ImagePollTimeoutError:
+                poll_timeout_retry_count += 1
+                if poll_timeout_retry_count <= MAX_POLL_TIMEOUT_RETRIES:
+                    logger.warning({"event": "image_poll_timeout_retry", "retry_count": poll_timeout_retry_count,
+                                    "max": MAX_POLL_TIMEOUT_RETRIES})
+                    account_service.mark_image_result(token, False)
+                    continue
                 raise
             except ImageGenerationError:
                 account_service.mark_image_result(token, False)
@@ -659,8 +672,18 @@ def stream_image_outputs_with_pool(request: ConversationRequest) -> Iterator[Ima
                 account_service.mark_image_result(token, False)
                 last_error = str(exc)
                 logger.warning({"event": "image_stream_fail", "request_token": token, "error": last_error})
+                if not emitted_for_token and is_tls_connection_error(last_error):
+                    tls_retry_count += 1
+                    if tls_retry_count <= MAX_TLS_RETRIES:
+                        logger.warning({"event": "image_tls_retry", "retry_count": tls_retry_count})
+                        continue
+                if not emitted_for_token and is_connection_timeout_error(last_error):
+                    conn_timeout_retry_count += 1
+                    if conn_timeout_retry_count <= MAX_CONN_TIMEOUT_RETRIES:
+                        logger.warning({"event": "image_conn_timeout_retry", "retry_count": conn_timeout_retry_count})
+                        time.sleep(min(conn_timeout_retry_count * 2, 10))
+                        continue
                 if not emitted_for_token and is_token_invalid_error(last_error):
-                    # 同 stream_text_deltas：先按 source 刷一次，token 真变了才同号重试。
                     refreshed_token = account_service.try_refresh_access_token(token)
                     if refreshed_token and refreshed_token != token:
                         continue
