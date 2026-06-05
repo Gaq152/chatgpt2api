@@ -257,14 +257,17 @@ class ImageTaskService:
             if not isinstance(result, dict):
                 raise RuntimeError("image task returned streaming result unexpectedly")
             data = result.get("data")
+            account_email = _clean(result.get("_account_email") or result.get("account_email"))
             if not isinstance(data, list) or not data:
                 upstream = _clean(result.get("message"))
                 if upstream:
                     message = upstream
                 else:
                     message = "号池中没有可用账号或所有账号均被限流，请检查号池状态（账号额度、是否被封禁、是否到达生图上限)"
-                # data 空说明号池/上游兜底，不扣配额
-                raise RuntimeError(message)
+                error = RuntimeError(message)
+                if account_email:
+                    setattr(error, "account_email", account_email)
+                raise error
             updates: dict[str, Any] = {"status": TASK_STATUS_SUCCESS, "data": data, "error": ""}
             if input_image_urls:
                 updates["input_image_urls"] = input_image_urls
@@ -279,16 +282,18 @@ class ImageTaskService:
                 request_preview=request_text(payload.get("prompt")),
                 urls=_collect_image_urls(data),
                 input_image_urls=input_image_urls,
+                account_email=account_email,
             )
         except ImageGenerationError as exc:
-            # 上游 / 账号池问题（含 content_policy_violation 也归到这里），不扣
             error_message = str(exc) or "image task failed"
+            exc_email = _clean(getattr(exc, "account_email", ""))
             self._update_task(key, status=TASK_STATUS_ERROR, error=error_message, data=[])
             self._log_call(
                 identity, mode, model, started, "调用失败",
                 request_preview=request_text(payload.get("prompt")),
                 status="failed", error=error_message,
                 input_image_urls=input_image_urls,
+                account_email=exc_email,
             )
         except HTTPException as exc:
             # 用户输入相关失败（敏感词等），与 LoggedCall 同步扣 1
@@ -341,6 +346,7 @@ class ImageTaskService:
         error: str = "",
         urls: list[str] | None = None,
         input_image_urls: list[str] | None = None,
+        account_email: str = "",
     ) -> None:
         endpoint = "/v1/images/edits" if mode == "edit" else "/v1/images/generations"
         summary_prefix = "图生图" if mode == "edit" else "文生图"
@@ -363,6 +369,8 @@ class ImageTaskService:
             detail["input_image_urls"] = list(input_image_urls)
         if urls:
             detail["urls"] = list(dict.fromkeys(urls))
+        if account_email:
+            detail["account_email"] = account_email
         try:
             log_service.add(LOG_TYPE_CALL, f"{summary_prefix}{suffix}", detail)
         except Exception:
