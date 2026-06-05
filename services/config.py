@@ -309,6 +309,13 @@ class ConfigStore:
         return bool(value)
 
     @property
+    def max_reference_images(self) -> int:
+        try:
+            return max(1, int(self.data.get("max_reference_images", 6)))
+        except (TypeError, ValueError):
+            return 6
+
+    @property
     def image_settle_enabled(self) -> bool:
         """图片二次确认机制：找到 file_ids 后等待一段时间再次确认。"""
         value = self.data.get("image_settle_enabled", True)
@@ -423,6 +430,7 @@ class ConfigStore:
         data["image_poll_initial_wait_secs"] = self.image_poll_initial_wait_secs
         data["image_account_concurrency"] = self.image_account_concurrency
         data["image_parallel_generation"] = self.image_parallel_generation
+        data["max_reference_images"] = self.max_reference_images
         data["image_settle_enabled"] = self.image_settle_enabled
         data["image_check_before_hit_enabled"] = self.image_check_before_hit_enabled
         data["image_settle_secs"] = self.image_settle_secs

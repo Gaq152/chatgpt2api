@@ -291,4 +291,8 @@ async def read_image_sources(sources: list[ImageSource]) -> list[ImageInput]:
         images.append(await run_in_threadpool(_download_image_url, source))
     if not images:
         raise HTTPException(status_code=400, detail={"error": "image file or image_url is required"})
+    from services.config import config
+    limit = config.max_reference_images
+    if len(images) > limit:
+        raise HTTPException(status_code=400, detail={"error": f"最多上传 {limit} 张参考图片，当前 {len(images)} 张"})
     return images
