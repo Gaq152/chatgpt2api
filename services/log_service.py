@@ -194,6 +194,7 @@ class LoggedCall:
     summary: str
     started: float = field(default_factory=time.time)
     request_text: str = ""
+    request_shape: dict[str, int] | None = None
     input_image_urls: list[str] = field(default_factory=list)
 
     def _consume_user_quota(self) -> None:
@@ -285,6 +286,8 @@ class LoggedCall:
         request_excerpt = _request_excerpt(self.request_text)
         if request_excerpt:
             detail["request_text"] = request_excerpt
+        if self.request_shape:
+            detail["request_shape"] = self.request_shape
         if error:
             detail["error"] = error
         if self.input_image_urls:

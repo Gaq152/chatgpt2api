@@ -283,6 +283,43 @@ def extract_prompt_from_message_content(content: object) -> str:
     return "\n".join(parts).strip()
 
 
+def _resolve_image_url(value: object) -> str:
+    if isinstance(value, dict):
+        return str(value.get("url") or value.get("image_url") or "").strip()
+    return str(value or "").strip()
+
+
+def _decode_data_url(url: str) -> tuple[bytes, str] | None:
+    if not url.startswith("data:"):
+        return None
+    header, _, data = url.partition(",")
+    mime = header.split(";")[0].removeprefix("data:") or "image/png"
+    return base64.b64decode(data), mime
+
+
+def _decode_image_object(item: dict[str, object]) -> tuple[bytes, str] | None:
+    data = item.get("data")
+    if isinstance(data, (bytes, bytearray)):
+        return bytes(data), str(item.get("mime") or item.get("mime_type") or "image/png")
+    for key in ("image_url", "url"):
+        url = _resolve_image_url(item.get(key))
+        if url:
+            result = _decode_data_url(url)
+            if result:
+                return result
+    for key in ("b64_json", "base64"):
+        value = item.get(key)
+        if isinstance(value, str) and value.strip():
+            mime = str(item.get("mime") or item.get("mime_type") or item.get("mimeType") or "image/png")
+            return base64.b64decode(value), mime
+    source = item.get("source")
+    if isinstance(source, dict) and str(source.get("type") or "") == "base64":
+        encoded = str(source.get("data") or "")
+        mime = str(source.get("media_type") or source.get("mime_type") or "image/png")
+        return base64.b64decode(encoded), mime
+    return None
+
+
 def extract_image_from_message_content(content: object) -> list[tuple[bytes, str]]:
     if not isinstance(content, list):
         return []
@@ -292,18 +329,14 @@ def extract_image_from_message_content(content: object) -> list[tuple[bytes, str
             continue
         item_type = str(item.get("type") or "").strip()
         if item_type == "image_url":
-            url_obj = item.get("image_url") or item
-            url = str(url_obj.get("url") or "") if isinstance(url_obj, dict) else str(url_obj)
-            if url.startswith("data:"):
-                header, _, data = url.partition(",")
-                mime = header.split(";")[0].removeprefix("data:")
-                images.append((base64.b64decode(data), mime or "image/png"))
-        elif item_type == "input_image":
-            image_url = str(item.get("image_url") or "")
-            if image_url.startswith("data:"):
-                header, _, data = image_url.partition(",")
-                mime = header.split(";")[0].removeprefix("data:")
-                images.append((base64.b64decode(data), mime or "image/png"))
+            url = _resolve_image_url(item.get("image_url") or item.get("url") or item)
+            result = _decode_data_url(url)
+            if result:
+                images.append(result)
+        elif item_type in {"input_image", "image"}:
+            result = _decode_image_object(item)
+            if result:
+                images.append(result)
     return images
 
 
