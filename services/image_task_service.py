@@ -76,12 +76,27 @@ def _public_task(task: dict[str, Any]) -> dict[str, Any]:
         "created_at": task.get("created_at"),
         "updated_at": task.get("updated_at"),
     }
+    if task.get("conversation_id"):
+        item["conversation_id"] = task.get("conversation_id")
     if task.get("data") is not None:
         item["data"] = task.get("data")
+    if task.get("usage") is not None:
+        item["usage"] = task.get("usage")
     if task.get("error"):
         item["error"] = task.get("error")
     if task.get("input_image_urls"):
         item["input_image_urls"] = task.get("input_image_urls")
+    if task.get("progress"):
+        item["progress"] = task.get("progress")
+    if task.get("duration_ms") is not None:
+        item["duration_ms"] = task.get("duration_ms")
+    if task.get("status") in (TASK_STATUS_RUNNING, TASK_STATUS_QUEUED):
+        if task.get("status") == TASK_STATUS_RUNNING:
+            base_ts = task.get("started_ts")
+        else:
+            base_ts = task.get("created_ts") or task.get("updated_ts")
+        if base_ts:
+            item["elapsed_secs"] = round(time.time() - base_ts, 1)
     return item
 
 
@@ -210,6 +225,7 @@ class ImageTaskService:
                 "quality": _clean(payload.get("quality"), "auto"),
                 "created_at": now,
                 "updated_at": now,
+                "created_ts": time.time(),
             }
             self._tasks[key] = task
             self._save_locked()
@@ -235,11 +251,12 @@ class ImageTaskService:
     ) -> None:
         started = time.time()
         self._update_task(key, status=TASK_STATUS_RUNNING, error="")
-        # 复用 LoggedCall 的扣减语义：
-        # - 成功（dict.data 非空）→ 扣 1
-        # - 上游/账号池失败（dict.data 空 + upstream message / RuntimeError 默认提示）→ 不扣
-        # - 其他用户原因失败（HTTPException 等）→ 扣 1（按"用户配额"理解，不让违规请求免费重试）
-        # 失败路径在 except 里按异常类型决定。
+
+        def progress_callback(step: str) -> None:
+            if step == "image_stream_resolve_start":
+                self._update_task(key, started_ts=time.time())
+            self._update_task(key, progress=step)
+
         from fastapi import HTTPException
         from services.protocol.conversation import ImageGenerationError, save_image_bytes
 
@@ -251,9 +268,10 @@ class ImageTaskService:
                 except Exception:
                     pass
 
+        payload_with_progress = {**payload, "progress_callback": progress_callback}
         try:
             handler = self.edit_handler if mode == "edit" else self.generation_handler
-            result = handler(payload)
+            result = handler(payload_with_progress)
             if not isinstance(result, dict):
                 raise RuntimeError("image task returned streaming result unexpectedly")
             data = result.get("data")
@@ -268,7 +286,8 @@ class ImageTaskService:
                 if account_email:
                     setattr(error, "account_email", account_email)
                 raise error
-            updates: dict[str, Any] = {"status": TASK_STATUS_SUCCESS, "data": data, "error": ""}
+            duration_ms = int((time.time() - started) * 1000)
+            updates: dict[str, Any] = {"status": TASK_STATUS_SUCCESS, "data": data, "error": "", "duration_ms": duration_ms}
             if input_image_urls:
                 updates["input_image_urls"] = input_image_urls
             self._update_task(key, **updates)
@@ -287,7 +306,11 @@ class ImageTaskService:
         except ImageGenerationError as exc:
             error_message = str(exc) or "image task failed"
             exc_email = _clean(getattr(exc, "account_email", ""))
-            self._update_task(key, status=TASK_STATUS_ERROR, error=error_message, data=[])
+            conversation_id = _clean(getattr(exc, "conversation_id", ""))
+            duration_ms = int((time.time() - started) * 1000)
+            self._update_task(key, status=TASK_STATUS_ERROR, error=error_message, data=[],
+                              duration_ms=duration_ms,
+                              **({"conversation_id": conversation_id} if conversation_id else {}))
             self._log_call(
                 identity, mode, model, started, "调用失败",
                 request_preview=request_text(payload.get("prompt")),
@@ -296,9 +319,9 @@ class ImageTaskService:
                 account_email=exc_email,
             )
         except HTTPException as exc:
-            # 用户输入相关失败（敏感词等），与 LoggedCall 同步扣 1
             error_message = str(exc.detail) or "image task failed"
-            self._update_task(key, status=TASK_STATUS_ERROR, error=error_message, data=[])
+            duration_ms = int((time.time() - started) * 1000)
+            self._update_task(key, status=TASK_STATUS_ERROR, error=error_message, data=[], duration_ms=duration_ms)
             self._consume_user_quota(identity)
             self._log_call(
                 identity, mode, model, started, "调用失败",
@@ -307,9 +330,12 @@ class ImageTaskService:
                 input_image_urls=input_image_urls,
             )
         except Exception as exc:
-            # 兜底失败（含 data 为空抛的 RuntimeError），不扣
             error_message = str(exc) or "image task failed"
-            self._update_task(key, status=TASK_STATUS_ERROR, error=error_message, data=[])
+            conversation_id = _clean(getattr(exc, "conversation_id", ""))
+            duration_ms = int((time.time() - started) * 1000)
+            self._update_task(key, status=TASK_STATUS_ERROR, error=error_message, data=[],
+                              duration_ms=duration_ms,
+                              **({"conversation_id": conversation_id} if conversation_id else {}))
             self._log_call(
                 identity, mode, model, started, "调用失败",
                 request_preview=request_text(payload.get("prompt")),
@@ -383,6 +409,7 @@ class ImageTaskService:
                 return
             task.update(updates)
             task["updated_at"] = _now_iso()
+            task["updated_ts"] = time.time()
             self._save_locked()
 
     def _load_locked(self) -> dict[str, dict[str, Any]]:
@@ -416,7 +443,14 @@ class ImageTaskService:
                 "quality": _clean(item.get("quality"), "auto"),
                 "created_at": _clean(item.get("created_at"), _now_iso()),
                 "updated_at": _clean(item.get("updated_at"), _clean(item.get("created_at"), _now_iso())),
+                "created_ts": item.get("created_ts"),
+                "updated_ts": item.get("updated_ts"),
+                "started_ts": item.get("started_ts"),
+                "duration_ms": item.get("duration_ms"),
             }
+            conversation_id = _clean(item.get("conversation_id"))
+            if conversation_id:
+                task["conversation_id"] = conversation_id
             data = item.get("data")
             if isinstance(data, list):
                 task["data"] = data
@@ -456,6 +490,93 @@ class ImageTaskService:
         for key in removed_keys:
             self._tasks.pop(key, None)
         return bool(removed_keys)
+
+    def resume_poll(
+        self,
+        identity: dict[str, object],
+        task_id: str,
+        extra_timeout_secs: float = 30.0,
+    ) -> dict[str, Any]:
+        owner = _owner_id(identity)
+        key = _task_key(owner, _clean(task_id))
+        with self._lock:
+            task = self._tasks.get(key)
+            if task is None:
+                raise ValueError("task not found")
+            if task.get("status") != TASK_STATUS_ERROR:
+                raise ValueError("task is not in error state")
+            error_msg = _clean(task.get("error"))
+            if "超时" not in error_msg:
+                raise ValueError("task error is not a timeout error")
+            conversation_id = _clean(task.get("conversation_id"))
+            if not conversation_id:
+                raise ValueError("task has no conversation_id")
+            mode = task.get("mode", "generate")
+            model = task.get("model", "gpt-image-2")
+            self._update_task(key, status=TASK_STATUS_RUNNING, error="")
+
+        thread = threading.Thread(
+            target=self._run_resume_poll,
+            args=(key, conversation_id, extra_timeout_secs, dict(identity), mode, model),
+            name=f"image-resume-{_clean(task_id)[:16]}",
+            daemon=True,
+        )
+        thread.start()
+        return _public_task(task)
+
+    def _run_resume_poll(
+        self,
+        key: str,
+        conversation_id: str,
+        extra_timeout_secs: float,
+        identity: dict[str, object],
+        mode: str,
+        model: str,
+    ) -> None:
+        started = time.time()
+        try:
+            from services.account_service import account_service
+            from services.openai_backend_api import OpenAIBackendAPI
+            from services.protocol.conversation import format_image_result
+
+            token = account_service.get_available_access_token()
+            backend = OpenAIBackendAPI(token)
+            file_ids, sediment_ids = backend._poll_image_results(
+                conversation_id,
+                extra_timeout_secs,
+            )
+            if not file_ids and not sediment_ids:
+                raise RuntimeError(
+                    f"继续等待 {extra_timeout_secs} 秒后仍未找到图片结果。"
+                )
+
+            image_urls = backend.resolve_conversation_image_urls(
+                conversation_id, file_ids, sediment_ids, poll=False,
+            )
+            if not image_urls:
+                raise RuntimeError("图片 URL 解析失败")
+
+            image_items = [
+                {"b64_json": __import__("base64").b64encode(image_data).decode("ascii")}
+                for image_data in backend.download_image_bytes(image_urls)
+            ]
+            data = format_image_result(
+                image_items, "", "b64_json", "", int(time.time()),
+            )["data"]
+            duration_ms = int((time.time() - started) * 1000)
+            self._update_task(key, status=TASK_STATUS_SUCCESS, data=data, error="", duration_ms=duration_ms)
+            self._log_call(
+                identity, mode, model, started, "调用完成（续轮询）",
+                status="success", urls=_collect_image_urls(data),
+            )
+        except Exception as exc:
+            error_message = str(exc) or "resume poll failed"
+            duration_ms = int((time.time() - started) * 1000)
+            self._update_task(key, status=TASK_STATUS_ERROR, error=error_message, data=[], duration_ms=duration_ms)
+            self._log_call(
+                identity, mode, model, started, "调用失败（续轮询）",
+                status="failed", error=error_message,
+            )
 
 
 image_task_service = ImageTaskService(DATA_DIR / "image_tasks.json")

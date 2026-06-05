@@ -22,6 +22,7 @@ import {
   createImageGenerationTask,
   fetchAccounts,
   fetchImageTasks,
+  resumeImagePoll,
   fetchMyQuota,
   type Account,
   type ImageModel,
@@ -174,6 +175,8 @@ function taskDataToStoredImage(image: StoredImage, task: ImageTask): StoredImage
         ...image,
         taskId: task.id,
         status: "error",
+        taskStatus: undefined,
+        progress: undefined,
         error: "未返回图片数据",
       };
     }
@@ -181,10 +184,13 @@ function taskDataToStoredImage(image: StoredImage, task: ImageTask): StoredImage
       ...image,
       taskId: task.id,
       status: "success",
+      taskStatus: undefined,
+      progress: undefined,
       b64_json: first.b64_json,
       url: first.url,
       revised_prompt: first.revised_prompt,
       error: undefined,
+      durationMs: task.duration_ms,
     };
   }
 
@@ -193,15 +199,28 @@ function taskDataToStoredImage(image: StoredImage, task: ImageTask): StoredImage
       ...image,
       taskId: task.id,
       status: "error",
+      taskStatus: undefined,
+      progress: undefined,
       error: task.error || "生成失败",
+      durationMs: task.duration_ms,
     };
   }
+
+  const newTaskStatus = task.status === "queued" ? "queued" as const : task.status === "running" ? "running" as const : image.taskStatus;
+  const elapsedSecs =
+    newTaskStatus === "running" && typeof task.elapsed_secs === "number"
+      ? task.elapsed_secs
+      : undefined;
 
   return {
     ...image,
     taskId: task.id,
     status: "loading",
+    taskStatus: newTaskStatus,
+    progress: task.progress || image.progress,
     error: undefined,
+    elapsedSecs,
+    elapsedUpdatedAt: elapsedSecs != null ? Date.now() : undefined,
   };
 }
 
@@ -225,6 +244,10 @@ function deriveTurnStatus(turn: ImageTurn): Pick<ImageTurn, "status" | "error"> 
   const failedCount = turn.images.filter((image) => image.status === "error").length;
   const successCount = turn.images.filter((image) => image.status === "success").length;
   if (loadingCount > 0) {
+    const hasRunning = turn.images.some((image) => image.taskStatus === "running");
+    if (hasRunning) {
+      return { status: "generating", error: undefined };
+    }
     return { status: turn.status === "queued" ? "queued" : "generating", error: undefined };
   }
   if (failedCount > 0) {
@@ -233,7 +256,7 @@ function deriveTurnStatus(turn: ImageTurn): Pick<ImageTurn, "status" | "error"> 
   if (successCount > 0) {
     return { status: "success", error: undefined };
   }
-  return { status: "queued", error: undefined };
+  return { status: "success", error: undefined };
 }
 
 async function syncConversationImageTasks(items: ImageConversation[]) {
@@ -243,7 +266,11 @@ async function syncConversationImageTasks(items: ImageConversation[]) {
         conversation.turns.flatMap((turn) =>
           turn.resultsDeleted
             ? []
-            : turn.images.flatMap((image) => (image.status === "loading" && image.taskId ? [image.taskId] : [])),
+            : turn.images.flatMap((image) =>
+                (image.status === "loading" || (image.status === "error" && image.taskId))
+                  ? [image.taskId!]
+                  : [],
+              ),
         ),
       ),
     ),
@@ -264,7 +291,7 @@ async function syncConversationImageTasks(items: ImageConversation[]) {
     const turns = conversation.turns.map((turn) => {
       let turnChanged = false;
       const images = turn.images.map((image) => {
-        if (image.status !== "loading" || !image.taskId) {
+        if (!image.taskId || (image.status !== "loading" && image.status !== "error")) {
           return image;
         }
         const task = taskMap.get(image.taskId);
@@ -1206,6 +1233,30 @@ function ImagePageContent({ isAdmin, subjectId }: { isAdmin: boolean; subjectId:
     [runConversationQueue],
   );
 
+  const handleTimeoutRetryContinue = useCallback(async (taskId: string) => {
+    try {
+      await resumeImagePoll(taskId);
+      toast.success("已发起续轮询，请稍候");
+    } catch (err) {
+      toast.error(`续轮询失败: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }, []);
+
+  const handleDismissErrors = useCallback(async (conversationId: string, turnId: string) => {
+    const conversation = conversationsRef.current.find((item) => item.id === conversationId);
+    if (!conversation) return;
+    const nextConversation = {
+      ...conversation,
+      turns: conversation.turns.map((turn) => {
+        if (turn.id !== turnId) return turn;
+        const images = turn.images.filter((image) => image.status !== "error");
+        const derived = deriveTurnStatus({ ...turn, images });
+        return { ...turn, ...derived, images };
+      }),
+    };
+    await persistConversation(nextConversation);
+  }, []);
+
   useEffect(() => {
     for (const conversation of conversations) {
       if (
@@ -1377,6 +1428,8 @@ function ImagePageContent({ isAdmin, subjectId }: { isAdmin: boolean; subjectId:
                 onReuseTurnConfig={handleReuseTurnConfig}
                 onRegenerateTurn={handleRegenerateTurn}
                 onRetryImage={handleRetryImage}
+                onTimeoutRetryContinue={handleTimeoutRetryContinue}
+                onDismissErrors={handleDismissErrors}
                 formatConversationTime={formatConversationTime}
               />
             </div>
