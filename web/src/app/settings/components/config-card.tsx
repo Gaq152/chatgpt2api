@@ -29,6 +29,8 @@ export function ConfigCard() {
   const setAutoRemoveInvalidAccounts = useSettingsStore((state) => state.setAutoRemoveInvalidAccounts);
   const setAutoRemoveRateLimitedAccounts = useSettingsStore((state) => state.setAutoRemoveRateLimitedAccounts);
   const setAutoRelogin = useSettingsStore((state) => state.setAutoRelogin);
+  const setImageSettleEnabled = useSettingsStore((state) => state.setImageSettleEnabled);
+  const setImageSettleSecs = useSettingsStore((state) => state.setImageSettleSecs);
   const setLogLevel = useSettingsStore((state) => state.setLogLevel);
   const setProxy = useSettingsStore((state) => state.setProxy);
   const setBaseUrl = useSettingsStore((state) => state.setBaseUrl);
@@ -191,6 +193,24 @@ export function ConfigCard() {
             />
             401 自动重登
           </label>
+          <label className="flex items-center gap-3 rounded-xl border border-stone-200 bg-white px-4 py-3 text-sm text-stone-700">
+            <Checkbox
+              checked={Boolean(config?.image_settle_enabled)}
+              onCheckedChange={(checked) => setImageSettleEnabled(Boolean(checked))}
+            />
+            图片二次确认（settle + check-before-hit）
+          </label>
+          <div className="rounded-xl border border-stone-200 bg-white px-4 py-3">
+            <label className="text-sm text-stone-700">二次确认等待时间（秒）</label>
+            <Input
+              className="mt-1"
+              type="number"
+              min={0.5}
+              step={0.5}
+              value={String(config?.image_settle_secs || 2)}
+              onChange={(e) => setImageSettleSecs(Math.max(0.5, Number(e.target.value) || 2))}
+            />
+          </div>
           <div className="space-y-3 rounded-xl border border-stone-200 bg-white px-4 py-3">
             <div>
               <label className="text-sm text-stone-700">控制台日志级别</label>

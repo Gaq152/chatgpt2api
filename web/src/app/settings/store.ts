@@ -90,6 +90,9 @@ function normalizeConfig(config: SettingsConfig): SettingsConfig {
     auto_remove_invalid_accounts: Boolean(config.auto_remove_invalid_accounts),
     auto_remove_rate_limited_accounts: Boolean(config.auto_remove_rate_limited_accounts),
     auto_relogin: config.auto_relogin !== false,
+    image_settle_enabled: Boolean(config.image_settle_enabled),
+    image_check_before_hit_enabled: Boolean(config.image_check_before_hit_enabled),
+    image_settle_secs: Math.max(0.5, Number(config.image_settle_secs) || 2.0),
     log_levels: Array.isArray(config.log_levels) ? config.log_levels : [],
     proxy: typeof config.proxy === "string" ? config.proxy : "",
     base_url: typeof config.base_url === "string" ? config.base_url : "",
@@ -208,6 +211,8 @@ type SettingsStore = {
   setAutoRemoveInvalidAccounts: (value: boolean) => void;
   setAutoRemoveRateLimitedAccounts: (value: boolean) => void;
   setAutoRelogin: (value: boolean) => void;
+  setImageSettleEnabled: (value: boolean) => void;
+  setImageSettleSecs: (value: number) => void;
   setLogLevel: (level: string, enabled: boolean) => void;
   setProxy: (value: string) => void;
   setBaseUrl: (value: string) => void;
@@ -426,6 +431,14 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
 
   setAutoRelogin: (value) => {
     set((state) => state.config ? { config: { ...state.config, auto_relogin: value } } : {});
+  },
+
+  setImageSettleEnabled: (value) => {
+    set((state) => state.config ? { config: { ...state.config, image_settle_enabled: value, image_check_before_hit_enabled: value } } : {});
+  },
+
+  setImageSettleSecs: (value) => {
+    set((state) => state.config ? { config: { ...state.config, image_settle_secs: value } } : {});
   },
 
   setLogLevel: (level, enabled) => {
