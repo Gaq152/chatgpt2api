@@ -234,6 +234,8 @@ type SettingsStore = {
   setRegisterTargetQuota: (value: string) => void;
   setRegisterTargetAvailable: (value: string) => void;
   setRegisterCheckInterval: (value: string) => void;
+  setRegisterAutoReplenish: (value: boolean) => void;
+  setRegisterReplenishInterval: (value: string) => void;
   setRegisterMailField: (key: "request_timeout" | "wait_timeout" | "wait_interval", value: string) => void;
   addRegisterProvider: () => void;
   updateRegisterProvider: (index: number, updates: Record<string, unknown>) => void;
@@ -715,6 +717,14 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
     set((state) => state.registerConfig ? { registerConfig: { ...state.registerConfig, check_interval: Number(value) || 0 } } : {});
   },
 
+  setRegisterAutoReplenish: (value) => {
+    set((state) => state.registerConfig ? { registerConfig: { ...state.registerConfig, auto_replenish: value } } : {});
+  },
+
+  setRegisterReplenishInterval: (value) => {
+    set((state) => state.registerConfig ? { registerConfig: { ...state.registerConfig, replenish_interval: Number(value) || 30 } } : {});
+  },
+
   setRegisterMailField: (key, value) => {
     set((state) => state.registerConfig ? {
       registerConfig: {
@@ -774,6 +784,8 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
         target_quota: Math.max(1, Number(registerConfig.target_quota) || 1),
         target_available: Math.max(1, Number(registerConfig.target_available) || 1),
         check_interval: Math.max(1, Number(registerConfig.check_interval) || 5),
+        auto_replenish: Boolean(registerConfig.auto_replenish),
+        replenish_interval: Math.max(1, Number(registerConfig.replenish_interval) || 30),
       });
       set({ registerConfig: data.register });
       toast.success("注册配置已保存");
@@ -799,6 +811,8 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
           target_quota: Math.max(1, Number(registerConfig.target_quota) || 1),
           target_available: Math.max(1, Number(registerConfig.target_available) || 1),
           check_interval: Math.max(1, Number(registerConfig.check_interval) || 5),
+          auto_replenish: Boolean(registerConfig.auto_replenish),
+          replenish_interval: Math.max(1, Number(registerConfig.replenish_interval) || 30),
         });
       }
       const data = registerConfig.enabled ? await stopRegister() : await startRegister();

@@ -21,7 +21,7 @@ def _now() -> str:
 
 
 def _default_config() -> dict:
-    return {**openai_register.config, "mode": "total", "target_quota": 100, "target_available": 10, "check_interval": 5, "enabled": False, "stats": {"success": 0, "fail": 0, "done": 0, "running": 0, "threads": openai_register.config["threads"], "elapsed_seconds": 0, "avg_seconds": 0, "success_rate": 0, "current_quota": 0, "current_available": 0}}
+    return {**openai_register.config, "mode": "total", "target_quota": 100, "target_available": 10, "check_interval": 5, "auto_replenish": False, "replenish_interval": 30, "enabled": False, "stats": {"success": 0, "fail": 0, "done": 0, "running": 0, "threads": openai_register.config["threads"], "elapsed_seconds": 0, "avg_seconds": 0, "success_rate": 0, "current_quota": 0, "current_available": 0, "phase": "idle"}}
 
 
 def _normalize(raw: dict) -> dict:
@@ -33,6 +33,8 @@ def _normalize(raw: dict) -> dict:
     cfg["target_quota"] = max(1, int(cfg.get("target_quota") or 1))
     cfg["target_available"] = max(1, int(cfg.get("target_available") or 1))
     cfg["check_interval"] = max(1, int(cfg.get("check_interval") or 5))
+    cfg["auto_replenish"] = bool(cfg.get("auto_replenish"))
+    cfg["replenish_interval"] = max(1, int(cfg.get("replenish_interval") or 30))
     cfg["proxy"] = str(cfg.get("proxy") or "").strip()
     cfg["enabled"] = bool(cfg.get("enabled"))
     stats = {**_default_config()["stats"], **(raw.get("stats") if isinstance(raw.get("stats"), dict) else {}),
@@ -89,14 +91,17 @@ class RegisterService:
             self._inject_proxy_to_mail()
             self._logs = []
             metrics = self._pool_metrics()
-            self._config["stats"] = {"job_id": uuid.uuid4().hex, "success": 0, "fail": 0, "done": 0, "running": 0, "threads": self._config["threads"], **metrics, "started_at": _now(), "updated_at": _now()}
+            self._config["stats"] = {"job_id": uuid.uuid4().hex, "success": 0, "fail": 0, "done": 0, "running": 0, "threads": self._config["threads"], **metrics, "phase": "registering", "started_at": _now(), "updated_at": _now()}
             openai_register.config.update({k: self._config[k] for k in ("mail", "proxy", "total", "threads")})
             with openai_register.stats_lock:
                 openai_register.stats.update({"done": 0, "success": 0, "fail": 0, "start_time": time.time()})
             self._save()
             self._runner = threading.Thread(target=self._run, daemon=True, name="openai-register")
             self._runner.start()
-            self._append_log(f"注册任务启动，模式={self._config['mode']}，线程数={self._config['threads']}", "yellow")
+            ar_label = "，自动补充=开启" if self._config.get("auto_replenish") else ""
+            self._append_log(f"注册任务启动，模式={self._config['mode']}，线程数={self._config['threads']}{ar_label}", "yellow")
+            if self._config.get("auto_replenish") and self._config["mode"] == "total":
+                self._append_log("注意：注册总数模式下自动补充无效，完成后将停止", "yellow")
             return self.get()
 
     def stop(self) -> dict:
@@ -164,34 +169,93 @@ class RegisterService:
 
     def _run(self) -> None:
         threads = int(self.get()["threads"])
-        submitted, done, success, fail = 0, 0, 0, 0
-        with ThreadPoolExecutor(max_workers=threads) as executor:
-            futures = set()
-            while True:
-                cfg = self.get()
-                while self.get()["enabled"] and not self._target_reached(cfg, submitted) and len(futures) < threads:
-                    submitted += 1
-                    futures.add(executor.submit(openai_register.worker, submitted))
-                self._bump(running=len(futures), done=done, success=success, fail=fail)
-                if not futures and (not self.get()["enabled"] or str(cfg.get("mode") or "total") == "total"):
+        total_done, total_success, total_fail = 0, 0, 0
+
+        while True:
+            cfg = self.get()
+            if not cfg["enabled"]:
+                break
+
+            self._bump(phase="registering")
+            submitted, done, success, fail = 0, 0, 0, 0
+            with openai_register.stats_lock:
+                openai_register.stats.update({"done": 0, "success": 0, "fail": 0, "start_time": time.time()})
+
+            with ThreadPoolExecutor(max_workers=threads) as executor:
+                futures: set = set()
+                while True:
+                    cfg = self.get()
+                    while cfg["enabled"] and not self._target_reached(cfg, submitted) and len(futures) < threads:
+                        submitted += 1
+                        futures.add(executor.submit(openai_register.worker, submitted))
+                    self._bump(running=len(futures), done=total_done + done, success=total_success + success, fail=total_fail + fail)
+                    if not futures and (not cfg["enabled"] or self._target_reached(cfg, submitted)):
+                        break
+                    if not futures:
+                        time.sleep(max(1, int(cfg.get("check_interval") or 5)))
+                        continue
+                    finished, futures = wait(futures, return_when=FIRST_COMPLETED)
+                    for future in finished:
+                        done += 1
+                        try:
+                            result = future.result()
+                            success += 1 if result.get("ok") else 0
+                            fail += 0 if result.get("ok") else 1
+                        except Exception:
+                            fail += 1
+
+            total_done += done
+            total_success += success
+            total_fail += fail
+            self._bump(running=0, done=total_done, success=total_success, fail=total_fail)
+
+            cfg = self.get()
+            if not cfg["enabled"] or not cfg.get("auto_replenish") or cfg["mode"] == "total":
+                break
+
+            interval_minutes = max(1, int(cfg.get("replenish_interval") or 30))
+            self._bump(phase="monitoring")
+            self._append_log(f"注册批次完成（成功{success}，失败{fail}），进入监控模式，每 {interval_minutes} 分钟检查一次号池", "yellow")
+
+            for _ in range(interval_minutes * 60):
+                if not self.get()["enabled"]:
                     break
-                if not futures:
-                    time.sleep(max(1, int(cfg.get("check_interval") or 5)))
-                    continue
-                finished, futures = wait(futures, return_when=FIRST_COMPLETED)
-                for future in finished:
-                    done += 1
-                    try:
-                        result = future.result()
-                        success += 1 if result.get("ok") else 0
-                        fail += 0 if result.get("ok") else 1
-                    except Exception:
-                        fail += 1
-        self._bump(running=0, done=done, success=success, fail=fail, finished_at=_now())
+                time.sleep(1)
+
+            if not self.get()["enabled"]:
+                break
+
+            metrics = self._pool_metrics()
+            self._bump(**metrics)
+            cfg = self.get()
+
+            if self._target_reached(cfg, 0):
+                self._append_log(f"号池检查：目标已满足（额度={metrics['current_quota']}，可用={metrics['current_available']}），继续监控", "yellow")
+                self._bump(phase="monitoring")
+                while self.get()["enabled"]:
+                    interval_minutes = max(1, int(self.get().get("replenish_interval") or 30))
+                    for _ in range(interval_minutes * 60):
+                        if not self.get()["enabled"]:
+                            break
+                        time.sleep(1)
+                    if not self.get()["enabled"]:
+                        break
+                    metrics = self._pool_metrics()
+                    self._bump(**metrics)
+                    if not self._target_reached(self.get(), 0):
+                        self._append_log(f"号池检查：目标未满足（额度={metrics['current_quota']}，可用={metrics['current_available']}），启动补充注册", "yellow")
+                        break
+                    self._append_log(f"号池检查：目标已满足（额度={metrics['current_quota']}，可用={metrics['current_available']}），继续监控", "yellow")
+                if not self.get()["enabled"]:
+                    break
+            else:
+                self._append_log(f"号池检查：目标未满足（额度={metrics['current_quota']}，可用={metrics['current_available']}），启动补充注册", "yellow")
+
+        self._bump(running=0, done=total_done, success=total_success, fail=total_fail, phase="idle", finished_at=_now())
         with self._lock:
             self._config["enabled"] = False
             self._save()
-        self._append_log(f"注册任务结束，成功{success}，失败{fail}", "yellow")
+        self._append_log(f"注册任务结束，累计成功{total_success}，累计失败{total_fail}", "yellow")
 
 
 register_service = RegisterService(REGISTER_FILE)

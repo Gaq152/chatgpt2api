@@ -281,6 +281,8 @@ export type UserKey = {
 
 export type RegisterConfig = {
   enabled: boolean;
+  auto_replenish: boolean;
+  replenish_interval: number;
   mail: {
     request_timeout: number;
     wait_timeout: number;
@@ -306,6 +308,7 @@ export type RegisterConfig = {
     success_rate?: number;
     current_quota?: number;
     current_available?: number;
+    phase?: "idle" | "registering" | "monitoring";
     started_at?: string;
     updated_at?: string;
     finished_at?: string;

@@ -26,6 +26,8 @@ export function RegisterCard() {
   const setTargetQuota = useSettingsStore((state) => state.setRegisterTargetQuota);
   const setTargetAvailable = useSettingsStore((state) => state.setRegisterTargetAvailable);
   const setCheckInterval = useSettingsStore((state) => state.setRegisterCheckInterval);
+  const setAutoReplenish = useSettingsStore((state) => state.setRegisterAutoReplenish);
+  const setReplenishInterval = useSettingsStore((state) => state.setRegisterReplenishInterval);
   const setMailField = useSettingsStore((state) => state.setRegisterMailField);
   const addProvider = useSettingsStore((state) => state.addRegisterProvider);
   const updateProvider = useSettingsStore((state) => state.updateRegisterProvider);
@@ -136,6 +138,19 @@ export function RegisterCard() {
             <div className="space-y-2">
               <label className="text-sm text-stone-700">检查间隔（秒）</label>
               <Input value={String(config.check_interval || "")} onChange={(event) => setCheckInterval(event.target.value)} className="h-10 rounded-xl border-stone-200 bg-white" disabled={config.enabled || config.mode === "total"} />
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm text-stone-700">自动补充</label>
+              <div className="flex h-10 items-center">
+                <label className="flex items-center gap-3 text-sm text-stone-700">
+                  <Checkbox checked={Boolean(config.auto_replenish)} onCheckedChange={(checked) => setAutoReplenish(Boolean(checked))} disabled={config.enabled || config.mode === "total"} />
+                  达标后持续监控
+                </label>
+              </div>
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm text-stone-700">补充检查间隔（分钟）</label>
+              <Input value={String(config.replenish_interval || 30)} onChange={(event) => setReplenishInterval(event.target.value)} className="h-10 rounded-xl border-stone-200 bg-white" disabled={config.enabled || !config.auto_replenish} />
             </div>
           </div>
 
@@ -339,8 +354,8 @@ export function RegisterCard() {
                 <h2 className="text-lg font-semibold tracking-tight">运行结果</h2>
                 <p className="mt-1 text-sm text-stone-500">SSE 实时推送当前状态。</p>
               </div>
-              <Badge variant={config.enabled ? "success" : "secondary"} className="rounded-md">
-                {config.enabled ? "运行中" : "已停止"}
+              <Badge variant={config.enabled ? (stats.phase === "monitoring" ? "info" : "success") : "secondary"} className="rounded-md">
+                {config.enabled ? (stats.phase === "monitoring" ? "监控中" : "注册中") : "已停止"}
               </Badge>
             </div>
             <div className="grid grid-cols-4 gap-2">
@@ -374,10 +389,17 @@ export function RegisterCard() {
                 保存
               </Button>
             </div>
-            <div className="flex items-center gap-2 border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
-              <AlertTriangle className="size-4 shrink-0" />
-              启动之前注意先保存配置。
-            </div>
+            {config.enabled && config.auto_replenish && stats.phase === "monitoring" ? (
+              <div className="flex items-center gap-2 border border-sky-200 bg-sky-50 px-3 py-2 text-xs text-sky-800">
+                <LoaderCircle className="size-4 shrink-0 animate-spin" />
+                自动补充已启用，每 {config.replenish_interval || 30} 分钟检查号池状态
+              </div>
+            ) : (
+              <div className="flex items-center gap-2 border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                <AlertTriangle className="size-4 shrink-0" />
+                启动之前注意先保存配置。
+              </div>
+            )}
         </div>
 
         <div className="mt-4 flex min-h-0 flex-1 flex-col space-y-3 overflow-hidden border-t border-stone-200 pt-4">
