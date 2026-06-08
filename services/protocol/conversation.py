@@ -237,6 +237,7 @@ class ImageOutput:
     text: str = ""
     upstream_event_type: str = ""
     data: list[dict[str, Any]] = field(default_factory=list)
+    account_email: str = ""
 
     def to_chunk(self) -> dict[str, Any]:
         chunk: dict[str, Any] = {
@@ -687,16 +688,25 @@ def stream_image_outputs_with_pool(request: ConversationRequest) -> Iterator[Ima
             emitted_for_token = False
             returned_message = False
             returned_result = False
+            token_email = ""
             try:
+                acct = account_service.get_account(token)
+                if acct:
+                    token_email = str(acct.get("email") or "").strip()
                 backend = OpenAIBackendAPI(access_token=token)
                 for output in stream_image_outputs(backend, request, index, request.n):
                     if output.kind == "message" and request.message_as_error:
-                        raise ImageGenerationError(
+                        exc = ImageGenerationError(
                             output.text or "Image generation was rejected by upstream policy.",
                             status_code=400,
                             error_type="invalid_request_error",
                             code="content_policy_violation",
                         )
+                        if token_email:
+                            setattr(exc, "account_email", token_email)
+                        raise exc
+                    if token_email:
+                        output.account_email = token_email
                     emitted = True
                     emitted_for_token = True
                     returned_message = output.kind == "message"
@@ -757,8 +767,11 @@ def collect_image_outputs(outputs: Iterable[ImageOutput]) -> dict[str, Any]:
     data: list[dict[str, Any]] = []
     message = ""
     progress_parts: list[str] = []
+    account_email = ""
     for output in outputs:
         created = created or output.created
+        if output.account_email:
+            account_email = output.account_email
         if output.kind == "progress" and output.text:
             progress_parts.append(output.text)
         elif output.kind == "message":
@@ -767,6 +780,8 @@ def collect_image_outputs(outputs: Iterable[ImageOutput]) -> dict[str, Any]:
             data.extend(output.data)
 
     result: dict[str, Any] = {"created": created or int(time.time()), "data": data}
+    if account_email:
+        result["_account_email"] = account_email
     if not data:
         text = message or "".join(progress_parts).strip()
         if text:

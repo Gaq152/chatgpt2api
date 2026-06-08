@@ -251,6 +251,9 @@ class ImageTaskService:
     ) -> None:
         started = time.time()
         self._update_task(key, status=TASK_STATUS_RUNNING, error="")
+        req_size = _clean(payload.get("size"))
+        req_quality = _clean(payload.get("quality"))
+        req_n = int(payload.get("n") or 1)
 
         def progress_callback(step: str) -> None:
             if step == "image_stream_resolve_start":
@@ -302,6 +305,9 @@ class ImageTaskService:
                 urls=_collect_image_urls(data),
                 input_image_urls=input_image_urls,
                 account_email=account_email,
+                request_size=req_size,
+                request_quality=req_quality,
+                request_n=req_n,
             )
         except ImageGenerationError as exc:
             error_message = str(exc) or "image task failed"
@@ -317,6 +323,9 @@ class ImageTaskService:
                 status="failed", error=error_message,
                 input_image_urls=input_image_urls,
                 account_email=exc_email,
+                request_size=req_size,
+                request_quality=req_quality,
+                request_n=req_n,
             )
         except HTTPException as exc:
             error_message = str(exc.detail) or "image task failed"
@@ -328,10 +337,14 @@ class ImageTaskService:
                 request_preview=request_text(payload.get("prompt")),
                 status="failed", error=error_message,
                 input_image_urls=input_image_urls,
+                request_size=req_size,
+                request_quality=req_quality,
+                request_n=req_n,
             )
         except Exception as exc:
             error_message = str(exc) or "image task failed"
             conversation_id = _clean(getattr(exc, "conversation_id", ""))
+            exc_email = _clean(getattr(exc, "account_email", ""))
             duration_ms = int((time.time() - started) * 1000)
             self._update_task(key, status=TASK_STATUS_ERROR, error=error_message, data=[],
                               duration_ms=duration_ms,
@@ -341,6 +354,10 @@ class ImageTaskService:
                 request_preview=request_text(payload.get("prompt")),
                 status="failed", error=error_message,
                 input_image_urls=input_image_urls,
+                account_email=exc_email,
+                request_size=req_size,
+                request_quality=req_quality,
+                request_n=req_n,
             )
 
     @staticmethod
@@ -373,6 +390,9 @@ class ImageTaskService:
         urls: list[str] | None = None,
         input_image_urls: list[str] | None = None,
         account_email: str = "",
+        request_size: str = "",
+        request_quality: str = "",
+        request_n: int = 0,
     ) -> None:
         endpoint = "/v1/images/edits" if mode == "edit" else "/v1/images/generations"
         summary_prefix = "图生图" if mode == "edit" else "文生图"
@@ -387,6 +407,12 @@ class ImageTaskService:
             "duration_ms": int((time.time() - started) * 1000),
             "status": status,
         }
+        if request_size:
+            detail["request_size"] = request_size
+        if request_quality:
+            detail["request_quality"] = request_quality
+        if request_n and request_n > 1:
+            detail["request_n"] = request_n
         if request_preview:
             detail["request_text"] = request_preview
         if error:

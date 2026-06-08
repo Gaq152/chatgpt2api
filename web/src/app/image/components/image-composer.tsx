@@ -497,6 +497,7 @@ export function ImageComposer({
                             />
                           </div>
                         </div>
+                        <p className="mt-2 text-[11px] leading-relaxed text-stone-400">尺寸与质量通过提示词传递，实际生成结果可能与所选设置存在偏差</p>
                       </div>
                     ) : null}
                   </div>
