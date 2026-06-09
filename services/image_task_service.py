@@ -9,6 +9,8 @@ from pathlib import Path
 from typing import Any
 
 from services.config import DATA_DIR, config
+
+TASK_TOTAL_TIMEOUT_SECS = 300
 from services.content_filter import request_text
 from services.log_service import LOG_TYPE_CALL, log_service
 from services.protocol import openai_v1_image_edit, openai_v1_image_generations
@@ -281,7 +283,8 @@ class ImageTaskService:
                 except Exception:
                     pass
 
-        payload_with_progress = {**payload, "progress_callback": progress_callback}
+        deadline = started + TASK_TOTAL_TIMEOUT_SECS
+        payload_with_progress = {**payload, "progress_callback": progress_callback, "deadline": deadline}
         try:
             handler = self.edit_handler if mode == "edit" else self.generation_handler
             result = handler(payload_with_progress)

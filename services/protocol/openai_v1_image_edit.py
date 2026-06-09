@@ -24,6 +24,7 @@ def handle(body: dict[str, Any]) -> dict[str, Any] | Iterator[dict[str, Any]]:
     encoded_images = encode_images(images)
     if not encoded_images:
         raise ImageGenerationError("image is required")
+    deadline = float(body.get("deadline") or 0)
     outputs = stream_image_outputs_with_pool(ConversationRequest(
         prompt=prompt,
         model=model,
@@ -34,7 +35,7 @@ def handle(body: dict[str, Any]) -> dict[str, Any] | Iterator[dict[str, Any]]:
         base_url=base_url,
         images=encoded_images,
         message_as_error=True,
-    ))
+    ), deadline=deadline)
     if body.get("stream"):
         return stream_image_chunks(outputs)
     return collect_image_outputs(outputs)

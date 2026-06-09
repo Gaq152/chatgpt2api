@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Condition, Event, Lock, Thread
 from typing import Any
@@ -187,9 +188,11 @@ class AccountService:
             if int(self._image_inflight.get(token, 0)) < max_concurrency
         ]
 
-    def _acquire_next_candidate_token(self, excluded_tokens: set[str] | None = None) -> str:
+    def _acquire_next_candidate_token(self, excluded_tokens: set[str] | None = None, deadline: float = 0) -> str:
         with self._image_slot_condition:
             while True:
+                if deadline and time.time() >= deadline:
+                    raise RuntimeError("等待可用账号超时，所有账号并发槽已满")
                 if not self._list_ready_candidate_tokens(excluded_tokens):
                     raise RuntimeError("no available image quota")
                 tokens = self._list_available_candidate_tokens(excluded_tokens)
@@ -211,10 +214,12 @@ class AccountService:
                 self._image_inflight[access_token] = current_inflight - 1
             self._image_slot_condition.notify_all()
 
-    def get_available_access_token(self) -> str:
+    def get_available_access_token(self, deadline: float = 0) -> str:
         attempted_tokens: set[str] = set()
         while True:
-            access_token = self._acquire_next_candidate_token(excluded_tokens=attempted_tokens)
+            if deadline and time.time() >= deadline:
+                raise RuntimeError("等待可用账号超时，所有账号并发槽已满或验证失败")
+            access_token = self._acquire_next_candidate_token(excluded_tokens=attempted_tokens, deadline=deadline)
             attempted_tokens.add(access_token)
             try:
                 account = self.fetch_remote_info(access_token, "get_available_access_token")

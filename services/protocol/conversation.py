@@ -663,7 +663,7 @@ def stream_image_outputs(
         yield ImageOutput(kind="message", model=request.model, index=index, total=total, text=message)
 
 
-def stream_image_outputs_with_pool(request: ConversationRequest) -> Iterator[ImageOutput]:
+def stream_image_outputs_with_pool(request: ConversationRequest, deadline: float = 0) -> Iterator[ImageOutput]:
     if str(request.model or "").strip() not in IMAGE_MODELS:
         raise ImageGenerationError("unsupported image model,supported models: " + ", ".join(IMAGE_MODELS))
 
@@ -678,8 +678,10 @@ def stream_image_outputs_with_pool(request: ConversationRequest) -> Iterator[Ima
         conn_timeout_retry_count = 0
         tls_retry_count = 0
         while True:
+            if deadline and time.time() >= deadline:
+                raise ImageGenerationError("图片任务总耗时超时，请检查号池状态或稍后重试")
             try:
-                token = account_service.get_available_access_token()
+                token = account_service.get_available_access_token(deadline=deadline)
             except RuntimeError as exc:
                 if emitted:
                     return
