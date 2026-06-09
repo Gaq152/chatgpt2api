@@ -178,7 +178,7 @@ class AuthService:
             public["quota_window_start"] = window_start
             reset_at = (parsed + QUOTA_WINDOW).isoformat() if parsed is not None else None
             public["quota_reset_at"] = None if expired else reset_at
-            public["image_concurrency"] = self._normalize_image_concurrency(item.get("image_concurrency"))
+            public["image_concurrency"] = AuthService._normalize_image_concurrency(item.get("image_concurrency"))
         return public
 
     @staticmethod
