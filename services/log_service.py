@@ -85,10 +85,18 @@ class LogService:
         with self.path.open("a", encoding="utf-8") as file:
             file.write(self._serialize_item(item) + "\n")
 
-    def list(self, type: str = "", start_date: str = "", end_date: str = "", limit: int = 200) -> list[dict[str, Any]]:
+    def list(
+        self,
+        type: str = "",
+        start_date: str = "",
+        end_date: str = "",
+        key_name: str = "",
+        page: int = 1,
+        page_size: int = 20,
+    ) -> dict[str, Any]:
         if not self.path.exists():
-            return []
-        items: list[dict[str, Any]] = []
+            return {"items": [], "total": 0, "page": page, "page_size": page_size}
+        matched: list[dict[str, Any]] = []
         lines = self.path.read_text(encoding="utf-8").splitlines()
         for line_number in range(len(lines) - 1, -1, -1):
             item = self._parse_line(lines[line_number], line_number)
@@ -96,10 +104,64 @@ class LogService:
                 continue
             if not self._matches_filters(item, type=type, start_date=start_date, end_date=end_date):
                 continue
-            items.append(item)
-            if len(items) >= limit:
-                break
-        return items
+            if key_name:
+                item_key_name = str((item.get("detail") or {}).get("key_name") or "")
+                if key_name not in item_key_name:
+                    continue
+            matched.append(item)
+        total = len(matched)
+        page = max(1, page)
+        page_size = max(1, min(page_size, 100))
+        start = (page - 1) * page_size
+        items = matched[start : start + page_size]
+        return {"items": items, "total": total, "page": page, "page_size": page_size}
+
+    def key_names(self) -> list[str]:
+        if not self.path.exists():
+            return []
+        names: set[str] = set()
+        for raw_line in self.path.read_text(encoding="utf-8").splitlines():
+            try:
+                item = json.loads(raw_line)
+            except Exception:
+                continue
+            if not isinstance(item, dict):
+                continue
+            name = str((item.get("detail") or {}).get("key_name") or "").strip()
+            if name:
+                names.add(name)
+        return sorted(names)
+
+    def cleanup(self, retention_days: int) -> int:
+        if retention_days <= 0 or not self.path.exists():
+            return 0
+        cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
+        lines = self.path.read_text(encoding="utf-8").splitlines()
+        kept: list[str] = []
+        removed = 0
+        for line_number, raw_line in enumerate(lines):
+            item = self._parse_line(raw_line, line_number)
+            if item is None:
+                kept.append(raw_line)
+                continue
+            raw_time = str(item.get("time") or "")
+            try:
+                t = datetime.fromisoformat(raw_time)
+                if t.tzinfo is None:
+                    t = t.replace(tzinfo=timezone.utc)
+            except ValueError:
+                kept.append(self._serialize_item(item))
+                continue
+            if t < cutoff:
+                removed += 1
+            else:
+                kept.append(self._serialize_item(item))
+        if removed:
+            content = "\n".join(kept)
+            if content:
+                content += "\n"
+            self.path.write_text(content, encoding="utf-8")
+        return removed
 
     def delete(self, ids: list[str]) -> dict[str, int]:
         target_ids = {str(item or "").strip() for item in ids if str(item or "").strip()}

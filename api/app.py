@@ -13,6 +13,7 @@ from api.support import resolve_web_asset, start_limited_account_watcher
 from services.backup_service import backup_service
 from services.config import config
 from services.image_service import start_image_cleanup_scheduler
+from services.log_service import log_service
 
 
 def _cleanup_orphaned_conversations() -> None:
@@ -39,6 +40,8 @@ def create_app() -> FastAPI:
         cleanup_thread = start_image_cleanup_scheduler(stop_event)
         backup_service.start()
         config.cleanup_old_images()
+        if config.log_retention_days > 0:
+            log_service.cleanup(config.log_retention_days)
         _cleanup_orphaned_conversations()
         try:
             yield

@@ -14,7 +14,8 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { deleteSystemLogs, fetchSystemLogs, type SystemLog } from "@/lib/api";
+import { deleteSystemLogs, fetchLogKeyNames, fetchSystemLogs, type SystemLog } from "@/lib/api";
+import { Input } from "@/components/ui/input";
 import { formatTime } from "@/lib/format-time";
 import { useAuthGuard } from "@/lib/use-auth-guard";
 
@@ -57,14 +58,18 @@ function getStatus(item: SystemLog) {
 
 function LogsContent() {
   const [items, setItems] = useState<SystemLog[]>([]);
+  const [total, setTotal] = useState(0);
   const [type, setType] = useState<string>(LogType.Call);
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
+  const [keyName, setKeyName] = useState("");
+  const [keyNames, setKeyNames] = useState<string[]>([]);
   const [detailLog, setDetailLog] = useState<SystemLog | null>(null);
   const [detailOpen, setDetailOpen] = useState(false);
   const [lightboxIndex, setLightboxIndex] = useState(0);
   const [lightboxOpen, setLightboxOpen] = useState(false);
   const [page, setPage] = useState(1);
+  const [pageInput, setPageInput] = useState("1");
   const [isLoading, setIsLoading] = useState(true);
   const [isDeleting, setIsDeleting] = useState(false);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
@@ -74,21 +79,23 @@ function LogsContent() {
   const allDetailUrls = [...detailInputUrls, ...detailUrls];
   const detailImages = allDetailUrls.map((url, index) => ({ id: `${index}`, src: url }));
   const isCallLog = type === LogType.Call;
-  const pageSize = 10;
-  const pageCount = Math.max(1, Math.ceil(items.length / pageSize));
+  const pageSize = 20;
+  const pageCount = Math.max(1, Math.ceil(total / pageSize));
   const safePage = Math.min(page, pageCount);
-  const currentRows = items.slice((safePage - 1) * pageSize, safePage * pageSize);
+  const currentRows = items;
   const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
   const currentPageSelected = currentRows.length > 0 && currentRows.every((item) => selectedSet.has(item.id));
-  const allSelected = items.length > 0 && items.every((item) => selectedSet.has(item.id));
 
-  const loadLogs = async () => {
+  const loadLogs = async (targetPage?: number) => {
+    const p = targetPage ?? page;
     setIsLoading(true);
     try {
-      const data = await fetchSystemLogs({ type, start_date: startDate, end_date: endDate });
+      const data = await fetchSystemLogs({ type, start_date: startDate, end_date: endDate, key_name: keyName.trim(), page: p, page_size: pageSize });
       setItems(data.items);
+      setTotal(data.total);
+      setPage(data.page);
+      setPageInput(String(data.page));
       setSelectedIds((current) => current.filter((id) => data.items.some((item) => item.id === id)));
-      setPage(1);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "加载日志失败");
     } finally {
@@ -96,9 +103,17 @@ function LogsContent() {
     }
   };
 
+  const loadKeyNames = async () => {
+    try {
+      const data = await fetchLogKeyNames();
+      setKeyNames(data.items);
+    } catch {}
+  };
+
   const clearFilters = () => {
     setStartDate("");
     setEndDate("");
+    setKeyName("");
   };
 
   const openDetail = (item: SystemLog) => {
@@ -129,7 +144,7 @@ function LogsContent() {
         setDetailOpen(false);
         setDetailLog(null);
       }
-      await loadLogs();
+      await loadLogs(safePage);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "删除日志失败");
     } finally {
@@ -137,9 +152,27 @@ function LogsContent() {
     }
   };
 
+  const goToPage = (p: number) => {
+    const target = Math.max(1, Math.min(p, pageCount));
+    setPage(target);
+    setPageInput(String(target));
+    void loadLogs(target);
+  };
+
+  const handlePageInputKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "Enter") {
+      const target = Math.max(1, Math.min(parseInt(pageInput, 10) || 1, pageCount));
+      goToPage(target);
+    }
+  };
+
   useEffect(() => {
-    void loadLogs();
-  }, [type, startDate, endDate]);
+    void loadLogs(1);
+  }, [type, startDate, endDate, keyName]);
+
+  useEffect(() => {
+    void loadKeyNames();
+  }, []);
 
   return (
     <section className="space-y-5">
@@ -156,11 +189,20 @@ function LogsContent() {
               <SelectItem value={LogType.Account}>账号管理日志</SelectItem>
             </SelectContent>
           </Select>
+          {isCallLog && keyNames.length > 0 ? (
+            <Select value={keyName} onValueChange={setKeyName}>
+              <SelectTrigger className="h-10 w-[150px] rounded-xl border-stone-200 bg-white"><SelectValue placeholder="全部用户" /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value=" ">全部用户</SelectItem>
+                {keyNames.map((name) => <SelectItem key={name} value={name}>{name}</SelectItem>)}
+              </SelectContent>
+            </Select>
+          ) : null}
           <DateRangeFilter startDate={startDate} endDate={endDate} onChange={(start, end) => { setStartDate(start); setEndDate(end); }} />
           <Button variant="outline" onClick={clearFilters} className="h-10 rounded-xl border-stone-200 bg-white px-4 text-stone-700">
             清除筛选条件
           </Button>
-          <Button onClick={() => void loadLogs()} disabled={isLoading} className="h-10 rounded-xl bg-stone-950 px-4 text-white hover:bg-stone-800">
+          <Button onClick={() => void loadLogs(1)} disabled={isLoading} className="h-10 rounded-xl bg-stone-950 px-4 text-white hover:bg-stone-800">
             {isLoading ? <LoaderCircle className="size-4 animate-spin" /> : <Search className="size-4" />}
             查询
           </Button>
@@ -171,19 +213,15 @@ function LogsContent() {
         <CardContent className="p-0">
           <div className="flex flex-wrap items-center justify-between gap-3 border-b border-stone-100 px-5 py-4">
             <div className="flex flex-wrap items-center gap-3 text-sm text-stone-600">
-              <span>共 {items.length} 条</span>
+              <span>共 {total} 条</span>
               <label className="flex items-center gap-2">
                 <Checkbox checked={currentPageSelected} onCheckedChange={(checked) => toggleIds(currentRows.map((item) => item.id), Boolean(checked))} />
                 本页全选
               </label>
-              <label className="flex items-center gap-2">
-                <Checkbox checked={allSelected} onCheckedChange={(checked) => toggleIds(items.map((item) => item.id), Boolean(checked))} />
-                全选结果
-              </label>
               {selectedIds.length > 0 ? <span>已选 {selectedIds.length} 条</span> : null}
             </div>
             <div className="flex items-center gap-2">
-              <Button variant="ghost" className="h-8 rounded-lg px-3 text-stone-500" onClick={() => void loadLogs()} disabled={isLoading}>
+              <Button variant="ghost" className="h-8 rounded-lg px-3 text-stone-500" onClick={() => void loadLogs(safePage)} disabled={isLoading}>
                 <RefreshCw className={`size-4 ${isLoading ? "animate-spin" : ""}`} />
                 刷新
               </Button>
@@ -275,11 +313,21 @@ function LogsContent() {
             </Table>
           </div>
           <div className="flex items-center justify-end gap-2 border-t border-stone-100 px-4 py-3 text-sm text-stone-500">
-            <span>第 {safePage} / {pageCount} 页，共 {items.length} 条</span>
-            <Button variant="outline" size="icon" className="size-9 rounded-lg border-stone-200 bg-white" disabled={safePage <= 1} onClick={() => setPage((value) => Math.max(1, value - 1))}>
+            <span>共 {total} 条</span>
+            <Button variant="outline" size="icon" className="size-9 rounded-lg border-stone-200 bg-white" disabled={safePage <= 1} onClick={() => goToPage(safePage - 1)}>
               <ChevronLeft className="size-4" />
             </Button>
-            <Button variant="outline" size="icon" className="size-9 rounded-lg border-stone-200 bg-white" disabled={safePage >= pageCount} onClick={() => setPage((value) => Math.min(pageCount, value + 1))}>
+            <div className="flex items-center gap-1">
+              <Input
+                className="h-9 w-14 rounded-lg border-stone-200 bg-white text-center text-sm"
+                value={pageInput}
+                onChange={(e) => setPageInput(e.target.value)}
+                onKeyDown={handlePageInputKeyDown}
+                onBlur={() => setPageInput(String(safePage))}
+              />
+              <span>/ {pageCount}</span>
+            </div>
+            <Button variant="outline" size="icon" className="size-9 rounded-lg border-stone-200 bg-white" disabled={safePage >= pageCount} onClick={() => goToPage(safePage + 1)}>
               <ChevronRight className="size-4" />
             </Button>
           </div>

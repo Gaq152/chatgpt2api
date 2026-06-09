@@ -649,12 +649,19 @@ export async function deleteImageTag(tag: string) {
   });
 }
 
-export async function fetchSystemLogs(filters: { type?: string; start_date?: string; end_date?: string }) {
+export async function fetchSystemLogs(filters: { type?: string; start_date?: string; end_date?: string; key_name?: string; page?: number; page_size?: number }) {
   const params = new URLSearchParams();
   if (filters.type) params.set("type", filters.type);
   if (filters.start_date) params.set("start_date", filters.start_date);
   if (filters.end_date) params.set("end_date", filters.end_date);
-  return httpRequest<{ items: SystemLog[] }>(`/api/logs${params.toString() ? `?${params.toString()}` : ""}`);
+  if (filters.key_name) params.set("key_name", filters.key_name);
+  if (filters.page) params.set("page", String(filters.page));
+  if (filters.page_size) params.set("page_size", String(filters.page_size));
+  return httpRequest<{ items: SystemLog[]; total: number; page: number; page_size: number }>(`/api/logs${params.toString() ? `?${params.toString()}` : ""}`);
+}
+
+export async function fetchLogKeyNames() {
+  return httpRequest<{ items: string[] }>("/api/logs/key-names");
 }
 
 export async function deleteSystemLogs(ids: string[]) {
