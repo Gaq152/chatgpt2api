@@ -91,6 +91,7 @@ class LogService:
         start_date: str = "",
         end_date: str = "",
         key_name: str = "",
+        status: str = "",
         page: int = 1,
         page_size: int = 20,
     ) -> dict[str, Any]:
@@ -107,6 +108,10 @@ class LogService:
             if key_name:
                 item_key_name = str((item.get("detail") or {}).get("key_name") or "")
                 if key_name not in item_key_name:
+                    continue
+            if status:
+                item_status = str((item.get("detail") or {}).get("status") or "")
+                if item_status != status:
                     continue
             matched.append(item)
         total = len(matched)

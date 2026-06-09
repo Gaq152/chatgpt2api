@@ -64,6 +64,7 @@ function LogsContent() {
   const [endDate, setEndDate] = useState("");
   const [keyName, setKeyName] = useState("");
   const [keyNames, setKeyNames] = useState<string[]>([]);
+  const [status, setStatus] = useState("");
   const [detailLog, setDetailLog] = useState<SystemLog | null>(null);
   const [detailOpen, setDetailOpen] = useState(false);
   const [lightboxIndex, setLightboxIndex] = useState(0);
@@ -90,7 +91,7 @@ function LogsContent() {
     const p = targetPage ?? page;
     setIsLoading(true);
     try {
-      const data = await fetchSystemLogs({ type, start_date: startDate, end_date: endDate, key_name: keyName.trim(), page: p, page_size: pageSize });
+      const data = await fetchSystemLogs({ type, start_date: startDate, end_date: endDate, key_name: keyName.trim(), status, page: p, page_size: pageSize });
       setItems(data.items);
       setTotal(data.total);
       setPage(data.page);
@@ -114,6 +115,7 @@ function LogsContent() {
     setStartDate("");
     setEndDate("");
     setKeyName("");
+    setStatus("");
   };
 
   const openDetail = (item: SystemLog) => {
@@ -168,7 +170,7 @@ function LogsContent() {
 
   useEffect(() => {
     void loadLogs(1);
-  }, [type, startDate, endDate, keyName]);
+  }, [type, startDate, endDate, keyName, status]);
 
   useEffect(() => {
     void loadKeyNames();
@@ -195,6 +197,16 @@ function LogsContent() {
               <SelectContent>
                 <SelectItem value=" ">全部用户</SelectItem>
                 {keyNames.map((name) => <SelectItem key={name} value={name}>{name}</SelectItem>)}
+              </SelectContent>
+            </Select>
+          ) : null}
+          {isCallLog ? (
+            <Select value={status} onValueChange={setStatus}>
+              <SelectTrigger className="h-10 w-[120px] rounded-xl border-stone-200 bg-white"><SelectValue placeholder="全部状态" /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value=" ">全部状态</SelectItem>
+                <SelectItem value="success">成功</SelectItem>
+                <SelectItem value="failed">失败</SelectItem>
               </SelectContent>
             </Select>
           ) : null}

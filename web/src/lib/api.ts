@@ -650,12 +650,13 @@ export async function deleteImageTag(tag: string) {
   });
 }
 
-export async function fetchSystemLogs(filters: { type?: string; start_date?: string; end_date?: string; key_name?: string; page?: number; page_size?: number }) {
+export async function fetchSystemLogs(filters: { type?: string; start_date?: string; end_date?: string; key_name?: string; status?: string; page?: number; page_size?: number }) {
   const params = new URLSearchParams();
   if (filters.type) params.set("type", filters.type);
   if (filters.start_date) params.set("start_date", filters.start_date);
   if (filters.end_date) params.set("end_date", filters.end_date);
   if (filters.key_name) params.set("key_name", filters.key_name);
+  if (filters.status) params.set("status", filters.status);
   if (filters.page) params.set("page", String(filters.page));
   if (filters.page_size) params.set("page_size", String(filters.page_size));
   return httpRequest<{ items: SystemLog[]; total: number; page: number; page_size: number }>(`/api/logs${params.toString() ? `?${params.toString()}` : ""}`);
