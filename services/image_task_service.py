@@ -193,6 +193,13 @@ class ImageTaskService:
                 missing_ids = []
             return {"items": items, "missing_ids": missing_ids}
 
+    def _count_owner_inflight(self, owner: str) -> int:
+        count = 0
+        for task in self._tasks.values():
+            if task.get("owner_id") == owner and task.get("status") in UNFINISHED_STATUSES:
+                count += 1
+        return count
+
     def _submit(
         self,
         identity: dict[str, object],
@@ -215,6 +222,9 @@ class ImageTaskService:
                 if cleaned:
                     self._save_locked()
                 return _public_task(task)
+            max_concurrency = int(identity.get("image_concurrency") or 0)
+            if max_concurrency > 0 and self._count_owner_inflight(owner) >= max_concurrency:
+                raise ValueError(f"已达到图片并发上限（{max_concurrency}），请等待当前任务完成后再试")
             task = {
                 "id": task_id,
                 "owner_id": owner,

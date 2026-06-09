@@ -277,6 +277,7 @@ export type UserKey = {
   quota_used?: number;
   quota_window_start?: string | null;
   quota_reset_at?: string | null;
+  image_concurrency?: number | null;
 };
 
 export type RegisterConfig = {
@@ -675,16 +676,16 @@ export async function fetchUserKeys() {
   return httpRequest<{ items: UserKey[] }>("/api/auth/users");
 }
 
-export async function createUserKey(name: string, quota24h: number) {
+export async function createUserKey(name: string, quota24h: number, imageConcurrency?: number) {
   return httpRequest<{ item: UserKey; key: string; items: UserKey[] }>("/api/auth/users", {
     method: "POST",
-    body: { name, quota_24h: quota24h },
+    body: { name, quota_24h: quota24h, ...(imageConcurrency != null ? { image_concurrency: imageConcurrency } : {}) },
   });
 }
 
 export async function updateUserKey(
   keyId: string,
-  updates: { enabled?: boolean; name?: string; key?: string; quota_24h?: number },
+  updates: { enabled?: boolean; name?: string; key?: string; quota_24h?: number; image_concurrency?: number },
 ) {
   return httpRequest<{ item: UserKey; items: UserKey[] }>(`/api/auth/users/${keyId}`, {
     method: "POST",

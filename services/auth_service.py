@@ -178,7 +178,16 @@ class AuthService:
             public["quota_window_start"] = window_start
             reset_at = (parsed + QUOTA_WINDOW).isoformat() if parsed is not None else None
             public["quota_reset_at"] = None if expired else reset_at
+            public["image_concurrency"] = self._normalize_image_concurrency(item.get("image_concurrency"))
         return public
+
+    @staticmethod
+    def _normalize_image_concurrency(value: object) -> int:
+        try:
+            n = int(value)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return 5
+        return max(1, min(100, n))
 
     def list_keys(self, role: AuthRole | None = None) -> list[dict[str, object]]:
         with self._lock:
@@ -241,7 +250,7 @@ class AuthService:
             raise ValueError("这个名称已经在使用中了，换一个更容易区分的名称吧")
         return candidate
 
-    def create_key(self, *, role: AuthRole, name: str = "", quota_24h: object = None) -> tuple[dict[str, object], str]:
+    def create_key(self, *, role: AuthRole, name: str = "", quota_24h: object = None, image_concurrency: object = None) -> tuple[dict[str, object], str]:
         with self._lock:
             self._reload_locked()
             normalized_name = self._build_name_locked(name, role=role)
@@ -271,6 +280,7 @@ class AuthService:
                 item["quota_24h"] = quota_value
                 item["quota_used"] = 0
                 item["quota_window_start"] = None
+                item["image_concurrency"] = self._normalize_image_concurrency(image_concurrency)
             self._items.append(item)
             self._save()
             return self._public_item(item), raw_key
@@ -311,6 +321,8 @@ class AuthService:
                     if quota_value is None:
                         raise ValueError("quota_24h 必须为正整数")
                     next_item["quota_24h"] = quota_value
+                if next_role == "user" and "image_concurrency" in updates and updates.get("image_concurrency") is not None:
+                    next_item["image_concurrency"] = self._normalize_image_concurrency(updates.get("image_concurrency"))
                 self._items[index] = next_item
                 self._save()
                 return self._public_item(next_item)

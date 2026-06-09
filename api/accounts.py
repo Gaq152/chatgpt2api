@@ -37,6 +37,7 @@ from services.sub2api_service import (
 class UserKeyCreateRequest(BaseModel):
     name: str = ""
     quota_24h: int | None = None
+    image_concurrency: int | None = None
 
 
 class UserKeyUpdateRequest(BaseModel):
@@ -44,6 +45,7 @@ class UserKeyUpdateRequest(BaseModel):
     enabled: bool | None = None
     key: str | None = None
     quota_24h: int | None = None
+    image_concurrency: int | None = None
 
 
 class AccountCreateRequest(BaseModel):
@@ -166,6 +168,7 @@ def create_router() -> APIRouter:
                 role="user",
                 name=body.name,
                 quota_24h=body.quota_24h,
+                image_concurrency=body.image_concurrency,
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail={"error": str(exc)}) from exc
@@ -185,6 +188,7 @@ def create_router() -> APIRouter:
                 "enabled": body.enabled,
                 "key": body.key,
                 "quota_24h": body.quota_24h,
+                "image_concurrency": body.image_concurrency,
             }.items()
             if value is not None
         }

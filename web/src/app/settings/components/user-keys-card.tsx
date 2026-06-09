@@ -36,9 +36,11 @@ export function UserKeysCard() {
   const [revealingKeyId, setRevealingKeyId] = useState<string | null>(null);
   const [deletingItem, setDeletingItem] = useState<UserKey | null>(null);
   const [editingItem, setEditingItem] = useState<UserKey | null>(null);
+  const [imageConcurrency, setImageConcurrency] = useState("");
   const [editName, setEditName] = useState("");
   const [editKey, setEditKey] = useState("");
   const [editQuota, setEditQuota] = useState("");
+  const [editImageConcurrency, setEditImageConcurrency] = useState("");
 
   const load = async () => {
     setIsLoading(true);
@@ -66,9 +68,14 @@ export function UserKeysCard() {
       toast.error("请填写一个大于 0 的 24 小时调用上限");
       return;
     }
+    const concurrencyValue = imageConcurrency.trim() ? Number.parseInt(imageConcurrency, 10) : undefined;
+    if (concurrencyValue != null && (!Number.isFinite(concurrencyValue) || concurrencyValue < 1 || concurrencyValue > 100)) {
+      toast.error("图片并发上限需要在 1-100 之间");
+      return;
+    }
     setIsCreating(true);
     try {
-      const data = await createUserKey(name.trim(), quotaValue);
+      const data = await createUserKey(name.trim(), quotaValue, concurrencyValue);
       setItems(data.items);
       const newItemId = String(data.item?.id || "");
       if (newItemId && data.key) {
@@ -76,6 +83,7 @@ export function UserKeysCard() {
       }
       setName("");
       setQuota24h("");
+      setImageConcurrency("");
       setIsDialogOpen(false);
       toast.success("用户密钥已创建");
     } catch (error) {
@@ -133,6 +141,7 @@ export function UserKeysCard() {
     setEditName(item.name);
     setEditKey("");
     setEditQuota(item.quota_24h != null ? String(item.quota_24h) : "");
+    setEditImageConcurrency(item.image_concurrency != null ? String(item.image_concurrency) : "");
   };
 
   const handleEdit = async () => {
@@ -154,7 +163,19 @@ export function UserKeysCard() {
         nextQuota = parsed;
       }
     }
-    if (trimmedName === item.name && !trimmedKey && nextQuota === undefined) {
+    const trimmedConcurrency = editImageConcurrency.trim();
+    let nextConcurrency: number | undefined;
+    if (trimmedConcurrency) {
+      const parsedC = Number.parseInt(trimmedConcurrency, 10);
+      if (!Number.isFinite(parsedC) || parsedC < 1 || parsedC > 100) {
+        toast.error("图片并发上限需要在 1-100 之间");
+        return;
+      }
+      if (parsedC !== item.image_concurrency) {
+        nextConcurrency = parsedC;
+      }
+    }
+    if (trimmedName === item.name && !trimmedKey && nextQuota === undefined && nextConcurrency === undefined) {
       setEditingItem(null);
       return;
     }
@@ -164,6 +185,7 @@ export function UserKeysCard() {
         ...(trimmedName !== item.name ? { name: trimmedName } : {}),
         ...(trimmedKey ? { key: trimmedKey } : {}),
         ...(nextQuota !== undefined ? { quota_24h: nextQuota } : {}),
+        ...(nextConcurrency !== undefined ? { image_concurrency: nextConcurrency } : {}),
       });
       setItems(data.items);
       if (trimmedKey) {
@@ -291,6 +313,7 @@ export function UserKeysCard() {
                           24h 用量 {(item.quota_used ?? 0)}
                           {item.quota_24h != null ? ` / ${item.quota_24h}` : " / 未配置"}
                         </span>
+                        <span>图片并发 {item.image_concurrency ?? 5}</span>
                         <span>下次刷新 {item.quota_reset_at ? formatDateTime(item.quota_reset_at) : "已重置"}</span>
                       </div>
                     </div>
@@ -372,6 +395,22 @@ export function UserKeysCard() {
               />
               <p className="text-xs leading-5 text-stone-500">
                 用户首次调用起算 24 小时，超额返回 429。期间未使用满 24 小时后下次调用会重新起算（不顺延）。
+              </p>
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-stone-700">图片并发上限（可选）</label>
+              <Input
+                type="number"
+                min={1}
+                max={100}
+                step={1}
+                value={imageConcurrency}
+                onChange={(event) => setImageConcurrency(event.target.value)}
+                placeholder="默认 5"
+                className="h-11 rounded-xl border-stone-200 bg-white"
+              />
+              <p className="text-xs leading-5 text-stone-500">
+                该用户同时进行中的图片任务数上限，范围 1-100，默认 5。
               </p>
             </div>
           </div>
@@ -469,6 +508,22 @@ export function UserKeysCard() {
               />
               <p className="text-xs leading-5 text-stone-500">
                 修改后立即生效，但当前 24h 窗口的已用计数不会清零。
+              </p>
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-stone-700">图片并发上限</label>
+              <Input
+                type="number"
+                min={1}
+                max={100}
+                step={1}
+                value={editImageConcurrency}
+                onChange={(event) => setEditImageConcurrency(event.target.value)}
+                placeholder="默认 5"
+                className="h-11 rounded-xl border-stone-200 bg-white"
+              />
+              <p className="text-xs leading-5 text-stone-500">
+                该用户同时进行中的图片任务数上限，范围 1-100。
               </p>
             </div>
             <div className="space-y-2">
