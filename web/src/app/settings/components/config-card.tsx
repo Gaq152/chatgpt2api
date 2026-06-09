@@ -24,6 +24,7 @@ export function ConfigCard() {
   const isSavingConfig = useSettingsStore((state) => state.isSavingConfig);
   const setRefreshAccountIntervalMinute = useSettingsStore((state) => state.setRefreshAccountIntervalMinute);
   const setImageRetentionDays = useSettingsStore((state) => state.setImageRetentionDays);
+  const setLogRetentionDays = useSettingsStore((state) => state.setLogRetentionDays);
   const setImagePollTimeoutSecs = useSettingsStore((state) => state.setImagePollTimeoutSecs);
   const setImageAccountConcurrency = useSettingsStore((state) => state.setImageAccountConcurrency);
   const setAutoRemoveInvalidAccounts = useSettingsStore((state) => state.setAutoRemoveInvalidAccounts);
@@ -96,15 +97,27 @@ export function ConfigCard() {
           </div>
           <div className="space-y-2">
             <label className="text-sm text-stone-700">全局代理</label>
-            <Input
-              value={String(config?.proxy || "")}
-              onChange={(event) => {
-                setProxy(event.target.value);
-                setProxyTestResult(null);
-              }}
-              placeholder="http://127.0.0.1:7890"
-              className="h-10 rounded-xl border-stone-200 bg-white"
-            />
+            <div className="flex gap-2">
+              <Input
+                value={String(config?.proxy || "")}
+                onChange={(event) => {
+                  setProxy(event.target.value);
+                  setProxyTestResult(null);
+                }}
+                placeholder="http://127.0.0.1:7890"
+                className="h-10 rounded-xl border-stone-200 bg-white"
+              />
+              <Button
+                type="button"
+                variant="outline"
+                className="h-10 shrink-0 rounded-xl border-stone-200 bg-white px-4 text-stone-700"
+                onClick={() => void handleTestProxy()}
+                disabled={isTestingProxy}
+              >
+                {isTestingProxy ? <LoaderCircle className="size-4 animate-spin" /> : <PlugZap className="size-4" />}
+                测试
+              </Button>
+            </div>
             <p className="text-xs text-stone-500">留空表示不使用代理。</p>
             {proxyTestResult ? (
               <div
@@ -119,18 +132,6 @@ export function ConfigCard() {
                   : `代理不可用：${proxyTestResult.error ?? "未知错误"}（用时 ${proxyTestResult.latency_ms} ms）`}
               </div>
             ) : null}
-            <div className="flex justify-end">
-              <Button
-                type="button"
-                variant="outline"
-                className="h-9 rounded-xl border-stone-200 bg-white px-4 text-stone-700"
-                onClick={() => void handleTestProxy()}
-                disabled={isTestingProxy}
-              >
-                {isTestingProxy ? <LoaderCircle className="size-4 animate-spin" /> : <PlugZap className="size-4" />}
-                测试代理
-              </Button>
-            </div>
           </div>
           <div className="space-y-2">
             <label className="text-sm text-stone-700">图片访问地址</label>
@@ -141,16 +142,6 @@ export function ConfigCard() {
               className="h-10 rounded-xl border-stone-200 bg-white"
             />
             <p className="text-xs text-stone-500">用于生成图片结果的访问前缀地址。</p>
-          </div>
-          <div className="space-y-2">
-            <label className="text-sm text-stone-700">图片自动清理</label>
-            <Input
-              value={String(config?.image_retention_days || "")}
-              onChange={(event) => setImageRetentionDays(event.target.value)}
-              placeholder="30"
-              className="h-10 rounded-xl border-stone-200 bg-white"
-            />
-            <p className="text-xs text-stone-500">自动删除多少天前的本地图片。</p>
           </div>
           <div className="space-y-2">
             <label className="text-sm text-stone-700">图片轮询超时</label>
@@ -172,20 +163,64 @@ export function ConfigCard() {
             />
             <p className="text-xs text-stone-500">限制每个账号同时处理的图片请求数量，默认 3。</p>
           </div>
-          <label className="flex items-center gap-3 rounded-xl border border-stone-200 bg-white px-4 py-3 text-sm text-stone-700">
-            <Checkbox
-              checked={Boolean(config?.auto_remove_invalid_accounts)}
-              onCheckedChange={(checked) => setAutoRemoveInvalidAccounts(Boolean(checked))}
-            />
-            自动移除异常账号
-          </label>
-          <label className="flex items-center gap-3 rounded-xl border border-stone-200 bg-white px-4 py-3 text-sm text-stone-700">
-            <Checkbox
-              checked={Boolean(config?.auto_remove_rate_limited_accounts)}
-              onCheckedChange={(checked) => setAutoRemoveRateLimitedAccounts(Boolean(checked))}
-            />
-            自动移除限流账号
-          </label>
+          <div className="space-y-4 rounded-xl border border-stone-200 bg-white px-4 py-3">
+            <div className="space-y-2">
+              <label className="text-sm text-stone-700">图片自动清理</label>
+              <Input
+                value={String(config?.image_retention_days || "")}
+                onChange={(event) => setImageRetentionDays(event.target.value)}
+                placeholder="30"
+                className="h-10 rounded-xl border-stone-200 bg-white"
+              />
+              <p className="text-xs text-stone-500">自动删除多少天前的本地图片。</p>
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm text-stone-700">日志自动清理</label>
+              <Input
+                value={String(config?.log_retention_days ?? "")}
+                onChange={(event) => setLogRetentionDays(event.target.value)}
+                placeholder="30"
+                className="h-10 rounded-xl border-stone-200 bg-white"
+              />
+              <p className="text-xs text-stone-500">自动删除多少天前的业务日志，0 表示不清理。</p>
+            </div>
+          </div>
+          <div className="space-y-3 rounded-xl border border-stone-200 bg-white px-4 py-3">
+            <label className="flex items-center gap-3 text-sm text-stone-700">
+              <Checkbox
+                checked={Boolean(config?.auto_remove_invalid_accounts)}
+                onCheckedChange={(checked) => setAutoRemoveInvalidAccounts(Boolean(checked))}
+              />
+              自动移除异常账号
+            </label>
+            <label className="flex items-center gap-3 text-sm text-stone-700">
+              <Checkbox
+                checked={Boolean(config?.auto_remove_rate_limited_accounts)}
+                onCheckedChange={(checked) => setAutoRemoveRateLimitedAccounts(Boolean(checked))}
+              />
+              自动移除限流账号
+            </label>
+          </div>
+          <div className="space-y-3 rounded-xl border border-stone-200 bg-white px-4 py-3">
+            <label className="flex items-center gap-3 text-sm text-stone-700">
+              <Checkbox
+                checked={Boolean(config?.image_settle_enabled)}
+                onCheckedChange={(checked) => setImageSettleEnabled(Boolean(checked))}
+              />
+              图片二次确认（settle + check-before-hit）
+            </label>
+            <div className="space-y-1">
+              <label className="text-sm text-stone-700">等待时间（秒）</label>
+              <Input
+                type="number"
+                min={0.5}
+                step={0.5}
+                value={String(config?.image_settle_secs || 2)}
+                onChange={(e) => setImageSettleSecs(Math.max(0.5, Number(e.target.value) || 2))}
+                className="h-10 rounded-xl border-stone-200 bg-white"
+              />
+            </div>
+          </div>
           <label className="flex items-center gap-3 rounded-xl border border-stone-200 bg-white px-4 py-3 text-sm text-stone-700">
             <Checkbox
               checked={config?.auto_relogin !== false}
@@ -193,24 +228,6 @@ export function ConfigCard() {
             />
             401 自动重登
           </label>
-          <label className="flex items-center gap-3 rounded-xl border border-stone-200 bg-white px-4 py-3 text-sm text-stone-700">
-            <Checkbox
-              checked={Boolean(config?.image_settle_enabled)}
-              onCheckedChange={(checked) => setImageSettleEnabled(Boolean(checked))}
-            />
-            图片二次确认（settle + check-before-hit）
-          </label>
-          <div className="rounded-xl border border-stone-200 bg-white px-4 py-3">
-            <label className="text-sm text-stone-700">二次确认等待时间（秒）</label>
-            <Input
-              className="mt-1"
-              type="number"
-              min={0.5}
-              step={0.5}
-              value={String(config?.image_settle_secs || 2)}
-              onChange={(e) => setImageSettleSecs(Math.max(0.5, Number(e.target.value) || 2))}
-            />
-          </div>
           <div className="space-y-3 rounded-xl border border-stone-200 bg-white px-4 py-3">
             <div>
               <label className="text-sm text-stone-700">控制台日志级别</label>
