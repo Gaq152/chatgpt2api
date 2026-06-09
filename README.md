@@ -73,7 +73,6 @@ docker-compose up -d
 - `json` - 本地 JSON 文件（默认）
 - `sqlite` - 本地 SQLite 数据库
 - `postgres` - 外部 PostgreSQL（需配置 `DATABASE_URL`）
-- `git` - Git 私有仓库（需配置 `GIT_REPO_URL` 和 `GIT_TOKEN`）
 
 示例：使用 PostgreSQL
 

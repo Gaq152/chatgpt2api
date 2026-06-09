@@ -2,6 +2,7 @@ ARG BUILDPLATFORM
 ARG TARGETPLATFORM
 ARG TARGETARCH
 
+# ---- 前端构建 ----
 FROM --platform=$BUILDPLATFORM node:22-alpine AS web-build
 
 WORKDIR /app/web
@@ -14,6 +15,26 @@ COPY web ./
 RUN NEXT_PUBLIC_APP_VERSION="$(cat /app/VERSION)" npm run build
 
 
+# ---- Python 依赖编译 ----
+FROM --platform=$TARGETPLATFORM python:3.13-slim AS python-deps
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    UV_LINK_MODE=copy
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
+    libpq-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN pip install --no-cache-dir uv
+
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen --no-dev --no-install-project
+
+
+# ---- 最终运行镜像 ----
 FROM --platform=$TARGETPLATFORM python:3.13-slim AS app
 
 ARG TARGETPLATFORM
@@ -25,21 +46,14 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# 安装系统依赖
-# - git: Git 存储后端需要
-# - libpq-dev: PostgreSQL 客户端库
-# - gcc: 编译 psycopg2-binary 需要
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    git \
-    libpq-dev \
-    gcc \
     openssl \
     && rm -rf /var/lib/apt/lists/*
 
 RUN pip install --no-cache-dir uv
 
+COPY --from=python-deps /app/.venv /app/.venv
 COPY pyproject.toml uv.lock ./
-RUN uv sync --frozen --no-dev --no-install-project
 
 COPY main.py ./
 COPY config.json ./
