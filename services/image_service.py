@@ -368,6 +368,14 @@ def _auto_cleanup_worker(stop_event: threading.Event) -> None:
                 logger.info({"event": "image_auto_cleanup_done", **result})
         except Exception:
             pass
+        try:
+            if config.log_retention_days > 0:
+                from services.log_service import log_service
+                removed = log_service.cleanup(config.log_retention_days)
+                if removed:
+                    logger.info({"event": "log_auto_cleanup", "removed": removed, "retention_days": config.log_retention_days})
+        except Exception:
+            pass
 
 
 def start_image_cleanup_scheduler(stop_event: threading.Event) -> threading.Thread:
