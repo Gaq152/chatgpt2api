@@ -164,8 +164,8 @@ export function ImageResults({
           <div key={turn.id} className="flex flex-col gap-3 sm:gap-4">
             {!turn.promptDeleted ? (
               <div className="flex justify-end">
-                <div className="max-w-[90%] px-1 py-1 text-[14px] leading-6 text-stone-900 sm:max-w-[82%] sm:text-[15px] sm:leading-7">
-                  <div className="mb-1.5 flex flex-wrap justify-end gap-2 text-[11px] text-stone-400 sm:mb-2">
+                <div className="max-w-[90%] rounded-2xl bg-stone-100 px-3.5 py-2.5 text-left text-[14px] leading-6 text-stone-900 sm:max-w-[82%] sm:text-[15px] sm:leading-7">
+                  <div className="mb-1.5 flex flex-wrap justify-start gap-2 text-[11px] text-stone-400 sm:mb-2">
                     <span>第 {turnIndex + 1} 轮</span>
                     <span>
                       {turn.mode === "edit" ? "编辑图" : "文生图"}
@@ -173,8 +173,8 @@ export function ImageResults({
                     <span>{getTurnStatusLabel(turn.status)}</span>
                     <span>{formatConversationTime(turn.createdAt)}</span>
                   </div>
-                  <div className="text-right">{turn.prompt}</div>
-                  <div className="mt-2 flex flex-wrap justify-end gap-1.5">
+                  <div className="whitespace-pre-wrap break-words">{turn.prompt}</div>
+                  <div className="mt-2 flex flex-wrap justify-start gap-1.5">
                     <button
                       type="button"
                       onClick={() => void onReuseTurnConfig(selectedConversation.id, turn.id)}
