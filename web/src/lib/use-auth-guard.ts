@@ -1,9 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 import { useRouter } from "next/navigation";
 
-import { getValidatedAuthSession } from "@/lib/auth-session";
+import { useAuth } from "@/lib/auth-context";
 import {
   getDefaultRouteForRole,
   type AuthRole,
@@ -17,73 +17,43 @@ type UseAuthGuardResult = {
 
 export function useAuthGuard(allowedRoles?: AuthRole[]): UseAuthGuardResult {
   const router = useRouter();
-  const [session, setSession] = useState<StoredAuthSession | null>(null);
-  const [isCheckingAuth, setIsCheckingAuth] = useState(true);
+  const { status, session } = useAuth();
   const allowedRolesKey = (allowedRoles || []).join(",");
 
   useEffect(() => {
-    let active = true;
+    // 仍在建立会话：等结果，不做任何跳转
+    if (status === "loading") {
+      return;
+    }
 
-    const load = async () => {
-      const roleList = allowedRolesKey ? (allowedRolesKey.split(",") as AuthRole[]) : [];
-      const storedSession = await getValidatedAuthSession();
-      if (!active) {
-        return;
-      }
+    if (status === "unauthenticated" || !session) {
+      router.replace("/login");
+      return;
+    }
 
-      if (!storedSession) {
-        setSession(null);
-        setIsCheckingAuth(false);
-        router.replace("/login");
-        return;
-      }
+    // 基于后端确认过的 role 做权限决策（本地存储被篡改不影响这里）。
+    // SPA 切页时 Context 已同步持有 role，越权用户在页面内容渲染前即被重定向。
+    const roleList = allowedRolesKey ? (allowedRolesKey.split(",") as AuthRole[]) : [];
+    if (roleList.length > 0 && !roleList.includes(session.role)) {
+      router.replace(getDefaultRouteForRole(session.role));
+    }
+  }, [status, session, allowedRolesKey, router]);
 
-      if (roleList.length > 0 && !roleList.includes(storedSession.role)) {
-        setSession(storedSession);
-        setIsCheckingAuth(false);
-        router.replace(getDefaultRouteForRole(storedSession.role));
-        return;
-      }
-
-      setSession(storedSession);
-      setIsCheckingAuth(false);
-    };
-
-    void load();
-    return () => {
-      active = false;
-    };
-  }, [allowedRolesKey, router]);
-
-  return { isCheckingAuth, session };
+  return {
+    isCheckingAuth: status === "loading",
+    session: status === "authenticated" ? session : null,
+  };
 }
 
 export function useRedirectIfAuthenticated() {
   const router = useRouter();
-  const [isCheckingAuth, setIsCheckingAuth] = useState(true);
+  const { status, session } = useAuth();
 
   useEffect(() => {
-    let active = true;
+    if (status === "authenticated" && session) {
+      router.replace(getDefaultRouteForRole(session.role));
+    }
+  }, [status, session, router]);
 
-    const load = async () => {
-      const storedSession = await getValidatedAuthSession();
-      if (!active) {
-        return;
-      }
-
-      if (storedSession) {
-        router.replace(getDefaultRouteForRole(storedSession.role));
-        return;
-      }
-
-      setIsCheckingAuth(false);
-    };
-
-    void load();
-    return () => {
-      active = false;
-    };
-  }, [router]);
-
-  return { isCheckingAuth };
+  return { isCheckingAuth: status === "loading" || status === "authenticated" };
 }

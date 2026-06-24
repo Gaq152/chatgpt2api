@@ -10,11 +10,13 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { login } from "@/lib/api";
+import { useAuth } from "@/lib/auth-context";
 import { useRedirectIfAuthenticated } from "@/lib/use-auth-guard";
-import { getDefaultRouteForRole, setStoredAuthSession } from "@/store/auth";
+import { getDefaultRouteForRole } from "@/store/auth";
 
 export default function LoginPage() {
   const router = useRouter();
+  const { signIn } = useAuth();
   const [authKey, setAuthKey] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const { isCheckingAuth } = useRedirectIfAuthenticated();
@@ -29,7 +31,7 @@ export default function LoginPage() {
     setIsSubmitting(true);
     try {
       const data = await login(normalizedAuthKey);
-      await setStoredAuthSession({
+      await signIn({
         key: normalizedAuthKey,
         role: data.role,
         subjectId: data.subject_id,

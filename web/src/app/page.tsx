@@ -3,28 +3,21 @@
 import { useEffect } from "react";
 import { useRouter } from "next/navigation";
 
-import { getValidatedAuthSession } from "@/lib/auth-session";
+import { useAuth } from "@/lib/auth-context";
 import { getDefaultRouteForRole } from "@/store/auth";
 
 export default function HomePage() {
   const router = useRouter();
+  const { status, session } = useAuth();
 
   useEffect(() => {
-    let active = true;
-
-    const redirect = async () => {
-      const session = await getValidatedAuthSession();
-      if (!active) {
-        return;
-      }
-      router.replace(session ? getDefaultRouteForRole(session.role) : "/login");
-    };
-
-    void redirect();
-    return () => {
-      active = false;
-    };
-  }, [router]);
+    if (status === "loading") {
+      return;
+    }
+    router.replace(
+      status === "authenticated" && session ? getDefaultRouteForRole(session.role) : "/login",
+    );
+  }, [status, session, router]);
 
   return null;
 }
