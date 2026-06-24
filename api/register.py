@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 
 from fastapi import APIRouter, Header
 from fastapi.responses import StreamingResponse
@@ -73,7 +72,7 @@ def create_router() -> APIRouter:
             last = ""
             idle_ticks = 0
             while True:
-                payload = json.dumps(register_service.get(), ensure_ascii=False)
+                payload = await asyncio.to_thread(register_service.get_json)
                 if payload != last:
                     last = payload
                     yield f"data: {payload}\n\n"

@@ -68,6 +68,12 @@ class RegisterService:
         with self._lock:
             return json.loads(json.dumps({**self._config, "logs": self._logs[-300:]}, ensure_ascii=False))
 
+    def get_json(self) -> str:
+        # 直接返回 JSON 字符串，仅一次序列化（避免 get() 的 loads(dumps()) 双重转换）。
+        # SSE 端点用 asyncio.to_thread 调用此方法，使序列化与锁等待不阻塞事件循环。
+        with self._lock:
+            return json.dumps({**self._config, "logs": self._logs[-300:]}, ensure_ascii=False)
+
     def _inject_proxy_to_mail(self) -> None:
         proxy = str(self._config.get("proxy") or "").strip()
         if proxy and isinstance(self._config.get("mail"), dict):
