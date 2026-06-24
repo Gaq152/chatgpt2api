@@ -518,12 +518,14 @@ export async function fetchImageConfig() {
   return httpRequest<{ max_reference_images: number }>("/api/image-config");
 }
 
-export async function fetchImageTasks(ids: string[]) {
+export async function fetchImageTasks(ids: string[], signal?: AbortSignal) {
   const params = new URLSearchParams();
   if (ids.length > 0) {
     params.set("ids", ids.join(","));
   }
-  return httpRequest<ImageTaskListResponse>(`/api/image-tasks${params.toString() ? `?${params.toString()}` : ""}`);
+  return httpRequest<ImageTaskListResponse>(`/api/image-tasks${params.toString() ? `?${params.toString()}` : ""}`, {
+    signal,
+  });
 }
 
 export async function resumeImagePoll(taskId: string, extraTimeoutSecs: number = 30) {

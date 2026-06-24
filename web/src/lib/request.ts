@@ -73,11 +73,12 @@ request.interceptors.response.use(
             const maxRetry = requestConfig.retry ?? 0;
             const retriedCount = requestConfig.__retryCount ?? 0;
             const isRetriable =
-                !error.response ||
-                error.code === "ECONNABORTED" ||
-                error.code === "ETIMEDOUT" ||
-                error.code === "ERR_NETWORK" ||
-                (typeof status === "number" && status >= 500 && status <= 599);
+                error.code !== "ERR_CANCELED" &&
+                (!error.response ||
+                    error.code === "ECONNABORTED" ||
+                    error.code === "ETIMEDOUT" ||
+                    error.code === "ERR_NETWORK" ||
+                    (typeof status === "number" && status >= 500 && status <= 599));
             if (maxRetry > 0 && retriedCount < maxRetry && isRetriable) {
                 requestConfig.__retryCount = retriedCount + 1;
                 const baseDelay = requestConfig.retryDelay ?? 500;
@@ -109,10 +110,11 @@ type RequestOptions = {
     redirectOnUnauthorized?: boolean;
     retry?: number;
     retryDelay?: number;
+    signal?: AbortSignal;
 };
 
 export async function httpRequest<T>(path: string, options: RequestOptions = {}) {
-    const {method = "GET", body, headers, redirectOnUnauthorized = true, retry, retryDelay} = options;
+    const {method = "GET", body, headers, redirectOnUnauthorized = true, retry, retryDelay, signal} = options;
     const isIdempotent = method.toUpperCase() === "GET";
     const config: RequestConfig = {
         url: path,
@@ -120,6 +122,7 @@ export async function httpRequest<T>(path: string, options: RequestOptions = {})
         data: body,
         headers,
         redirectOnUnauthorized,
+        signal,
         // 幂等的 GET 默认重试 2 次；非幂等请求需显式开启，避免重复提交副作用
         retry: retry ?? (isIdempotent ? 2 : 0),
         retryDelay,

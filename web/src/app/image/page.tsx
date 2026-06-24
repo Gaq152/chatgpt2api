@@ -392,6 +392,11 @@ function ImagePageContent({ isAdmin, subjectId }: { isAdmin: boolean; subjectId:
   const scrollRafRef = useRef<number | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  // 任务轮询的取消句柄：懒初始化保证首帧即存在；离开页面时 abort 以停止轮询并释放连接
+  const pollAbortRef = useRef<AbortController | null>(null);
+  if (!pollAbortRef.current) {
+    pollAbortRef.current = new AbortController();
+  }
 
   const [imagePrompt, setImagePrompt] = useState("");
   const [imageCount, setImageCount] = useState("3");
@@ -500,6 +505,15 @@ function ImagePageContent({ isAdmin, subjectId }: { isAdmin: boolean; subjectId:
       if (scrollRafRef.current !== null) {
         window.cancelAnimationFrame(scrollRafRef.current);
       }
+    };
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      // 离开页面：取消进行中的任务轮询并清空模块级队列标记，
+      // 避免幽灵请求占用 HTTP/1.1 连接、以及重进页面误判仍在轮询
+      pollAbortRef.current?.abort();
+      activeConversationQueueIds.clear();
     };
   }, []);
 
@@ -1008,6 +1022,7 @@ function ImagePageContent({ isAdmin, subjectId }: { isAdmin: boolean; subjectId:
       }
 
       activeConversationQueueIds.add(conversationId);
+      const signal = pollAbortRef.current?.signal;
       const applyTasks = async (tasks: ImageTask[]) => {
         const taskMap = new Map(tasks.map((task) => [task.id, task]));
         const inputImageUrls = tasks.flatMap((task) => task.input_image_urls || []);
@@ -1091,6 +1106,9 @@ function ImagePageContent({ isAdmin, subjectId }: { isAdmin: boolean; subjectId:
         await applyTasks(submitted);
 
         while (true) {
+          if (signal?.aborted) {
+            break;
+          }
           const latestConversation = conversationsRef.current.find((conversation) => conversation.id === conversationId);
           const latestTurn = latestConversation?.turns.find((turn) => turn.id === activeTurn.id);
           const loadingTaskIds =
@@ -1102,7 +1120,10 @@ function ImagePageContent({ isAdmin, subjectId }: { isAdmin: boolean; subjectId:
           }
 
           await sleep(2000);
-          const taskList = await fetchImageTasks(loadingTaskIds);
+          if (signal?.aborted) {
+            break;
+          }
+          const taskList = await fetchImageTasks(loadingTaskIds, signal);
           if (taskList.items.length > 0) {
             await applyTasks(taskList.items);
           }
@@ -1125,6 +1146,10 @@ function ImagePageContent({ isAdmin, subjectId }: { isAdmin: boolean; subjectId:
 
         await loadQuota();
       } catch (error) {
+        if (signal?.aborted) {
+          // 已离开页面/卸载导致的取消：静默退出，不标记为生成失败
+          return;
+        }
         const message = error instanceof Error ? error.message : "生成图片失败";
         await updateConversation(conversationId, (current) => {
           const conversation = current ?? snapshot;
@@ -1148,16 +1173,19 @@ function ImagePageContent({ isAdmin, subjectId }: { isAdmin: boolean; subjectId:
         toast.error(message);
       } finally {
         activeConversationQueueIds.delete(conversationId);
-        for (const conversation of conversationsRef.current) {
-          if (
-            !activeConversationQueueIds.has(conversation.id) &&
-            conversation.turns.some(
-              (turn) =>
-                (turn.status === "queued" || turn.status === "generating") &&
-                turn.images.some((image) => image.status === "loading"),
-            )
-          ) {
-            void runConversationQueue(conversation.id);
+        // 卸载/离开页面后不再重启其它队列，避免重新提交任务
+        if (!signal?.aborted) {
+          for (const conversation of conversationsRef.current) {
+            if (
+              !activeConversationQueueIds.has(conversation.id) &&
+              conversation.turns.some(
+                (turn) =>
+                  (turn.status === "queued" || turn.status === "generating") &&
+                  turn.images.some((image) => image.status === "loading"),
+              )
+            ) {
+              void runConversationQueue(conversation.id);
+            }
           }
         }
       }

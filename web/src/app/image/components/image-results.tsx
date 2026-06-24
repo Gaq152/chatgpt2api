@@ -28,20 +28,10 @@ type ImageResultsProps = {
   formatConversationTime: (value: string) => string;
 };
 
-const b64BlobUrlCache = new Map<string, string>();
-
 function getStoredImageSrc(image: StoredImage) {
   if (image.b64_json) {
-    let url = b64BlobUrlCache.get(image.b64_json);
-    if (!url) {
-      const binary = atob(image.b64_json);
-      const bytes = new Uint8Array(binary.length);
-      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-      const blob = new Blob([bytes], { type: "image/png" });
-      url = URL.createObjectURL(blob);
-      b64BlobUrlCache.set(image.b64_json, url);
-    }
-    return url;
+    // 直接交给浏览器解码线程异步解码，避免在主线程同步 atob 大图导致切页/交互卡顿
+    return `data:image/png;base64,${image.b64_json}`;
   }
   return image.url || "";
 }
@@ -50,10 +40,9 @@ async function downloadStoredImage(image: StoredImage, index: number) {
   let blob: Blob | null = null;
   try {
     if (image.b64_json) {
-      const binary = atob(image.b64_json);
-      const bytes = new Uint8Array(binary.length);
-      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-      blob = new Blob([bytes], { type: "image/png" });
+      // 用 fetch 解析 data URL 取 blob，解码不占用主线程
+      const res = await fetch(`data:image/png;base64,${image.b64_json}`);
+      blob = await res.blob();
     } else if (image.url) {
       const url = image.url.startsWith("http") ? image.url : `${window.location.origin}${image.url}`;
       const res = await fetch(url);
