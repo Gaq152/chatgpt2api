@@ -330,6 +330,8 @@ export async function login(authKey: string) {
       Authorization: `Bearer ${normalizedAuthKey}`,
     },
     redirectOnUnauthorized: false,
+    // 登录校验是幂等的，瞬时网络抖动时重试，避免误判为登录失效
+    retry: 2,
   });
 }
 
