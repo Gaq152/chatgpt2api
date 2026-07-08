@@ -5,6 +5,11 @@ export type AccountStatus = "正常" | "限流" | "异常" | "禁用";
 export type ImageModel = "gpt-image-2" | "codex-gpt-image-2";
 export type AuthRole = "admin" | "user";
 
+export type AnnouncementSettings = {
+  enabled: boolean;
+  message: string;
+};
+
 export type Account = {
   access_token: string;
   type: AccountType;
@@ -123,6 +128,7 @@ export type SettingsConfig = {
   backup?: BackupSettings;
   backup_state?: BackupState;
   image_storage?: ImageStorageSettings;
+  announcement?: AnnouncementSettings;
   [key: string]: unknown;
 };
 
@@ -545,6 +551,17 @@ export async function updateSettingsConfig(settings: SettingsConfig) {
     method: "POST",
     body: settings,
   });
+}
+
+export async function updateAnnouncementConfig(announcement: AnnouncementSettings) {
+  return httpRequest<{ config: SettingsConfig }>("/api/settings", {
+    method: "POST",
+    body: { announcement },
+  });
+}
+
+export async function fetchAnnouncement() {
+  return httpRequest<{ announcement: AnnouncementSettings }>("/api/announcement");
 }
 
 export async function testBackupConnection() {

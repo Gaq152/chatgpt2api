@@ -21,8 +21,10 @@ import {
   testBackupConnection,
   testImageStorageConnection,
   updateCPAPool,
+  updateAnnouncementConfig,
   updateRegisterConfig,
   updateSettingsConfig,
+  type AnnouncementSettings,
   type BackupItem,
   type BackupSettings,
   type BackupState,
@@ -37,6 +39,21 @@ import {
 export const PAGE_SIZE_OPTIONS = ["50", "100", "200"] as const;
 
 export type PageSizeOption = (typeof PAGE_SIZE_OPTIONS)[number];
+
+const DEFAULT_ANNOUNCEMENT: AnnouncementSettings = {
+  enabled: false,
+  message: "",
+};
+
+function normalizeAnnouncement(value: unknown): AnnouncementSettings {
+  const source = typeof value === "object" && value
+    ? value as Partial<AnnouncementSettings>
+    : {};
+  return {
+    enabled: Boolean(source.enabled),
+    message: String(source.message || "").trim(),
+  };
+}
 
 function normalizeConfig(config: SettingsConfig): SettingsConfig {
   const imageStorage = typeof config.image_storage === "object" && config.image_storage
@@ -114,6 +131,7 @@ function normalizeConfig(config: SettingsConfig): SettingsConfig {
       webdav_root_path: String(imageStorage.webdav_root_path || "chatgpt2api/images"),
       public_base_url: String(imageStorage.public_base_url || ""),
     },
+    announcement: normalizeAnnouncement(config.announcement || DEFAULT_ANNOUNCEMENT),
     backup: {
       ...backup,
       enabled: Boolean(backup.enabled),
@@ -170,6 +188,7 @@ type SettingsStore = {
   isTestingBackup: boolean;
   isTestingImageStorage: boolean;
   isSyncingImageStorage: boolean;
+  isSavingAnnouncement: boolean;
 
   registerConfig: RegisterConfig | null;
   isLoadingRegister: boolean;
@@ -221,6 +240,9 @@ type SettingsStore = {
   setSensitiveWordsText: (value: string) => void;
   setAIReviewField: (key: "enabled" | "base_url" | "api_key" | "model" | "prompt", value: string | boolean) => void;
   setImageStorageField: (key: keyof ImageStorageSettings, value: string | boolean) => void;
+  setAnnouncementEnabled: (value: boolean) => void;
+  setAnnouncementMessage: (value: string) => void;
+  saveAnnouncement: () => Promise<boolean>;
   testImageStorage: () => Promise<void>;
   syncImagesToWebDAV: () => Promise<void>;
   setBackupField: (key: keyof BackupSettings, value: string | boolean) => void;
@@ -278,6 +300,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
   isTestingBackup: false,
   isTestingImageStorage: false,
   isSyncingImageStorage: false,
+  isSavingAnnouncement: false,
 
   registerConfig: null,
   isLoadingRegister: true,
@@ -341,11 +364,13 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
     if (!config) {
       return false;
     }
+    const configForSave = { ...config };
+    delete configForSave.announcement;
 
     set({ isSavingConfig: true });
     try {
       const data = await updateSettingsConfig({
-        ...config,
+        ...configForSave,
         refresh_account_interval_minute: Math.max(1, Number(config.refresh_account_interval_minute) || 1),
         image_retention_days: Math.max(1, Number(config.image_retention_days) || 30),
         image_poll_timeout_secs: Math.max(1, Number(config.image_poll_timeout_secs) || 120),
@@ -520,6 +545,59 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
         },
       };
     });
+  },
+
+  setAnnouncementEnabled: (value) => {
+    set((state) => state.config ? {
+      config: {
+        ...state.config,
+        announcement: {
+          ...normalizeAnnouncement(state.config.announcement),
+          enabled: value,
+        },
+      },
+    } : {});
+  },
+
+  setAnnouncementMessage: (value) => {
+    set((state) => state.config ? {
+      config: {
+        ...state.config,
+        announcement: {
+          ...normalizeAnnouncement(state.config.announcement),
+          message: value,
+        },
+      },
+    } : {});
+  },
+
+  saveAnnouncement: async () => {
+    const { config } = get();
+    if (!config) {
+      return false;
+    }
+
+    const announcement = normalizeAnnouncement(config.announcement);
+    set({ isSavingAnnouncement: true });
+    try {
+      const data = await updateAnnouncementConfig(announcement);
+      const normalized = normalizeConfig(data.config);
+      set((state) => state.config ? {
+        config: {
+          ...state.config,
+          announcement: normalized.announcement,
+        },
+      } : {
+        config: normalized,
+      });
+      toast.success("公告已保存");
+      return true;
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "保存公告失败");
+      return false;
+    } finally {
+      set({ isSavingAnnouncement: false });
+    }
   },
 
   testImageStorage: async () => {

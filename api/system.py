@@ -98,6 +98,11 @@ def create_router(app_version: str) -> APIRouter:
         require_admin(authorization)
         return {"config": config.get()}
 
+    @router.get("/api/announcement")
+    async def get_announcement(authorization: str | None = Header(default=None)):
+        require_identity(authorization)
+        return {"announcement": config.get_public_announcement_settings()}
+
     @router.post("/api/settings")
     async def save_settings(body: SettingsUpdateRequest, authorization: str | None = Header(default=None)):
         require_admin(authorization)

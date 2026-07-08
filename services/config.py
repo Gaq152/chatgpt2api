@@ -48,6 +48,11 @@ DEFAULT_CHAT_COMPLETION_CACHE = {
     "drop_assistant_history": False,
 }
 
+DEFAULT_ANNOUNCEMENT = {
+    "enabled": False,
+    "message": "",
+}
+
 
 def _normalize_bool(value: object, default: bool = False) -> bool:
     if isinstance(value, str):
@@ -160,6 +165,14 @@ def _normalize_chat_completion_cache_settings(value: object) -> dict[str, object
             source.get("drop_assistant_history"),
             bool(DEFAULT_CHAT_COMPLETION_CACHE["drop_assistant_history"]),
         ),
+    }
+
+
+def _normalize_announcement_settings(value: object) -> dict[str, object]:
+    source = value if isinstance(value, dict) else {}
+    return {
+        "enabled": _normalize_bool(source.get("enabled"), bool(DEFAULT_ANNOUNCEMENT["enabled"])),
+        "message": str(source.get("message") or "").strip(),
     }
 
 
@@ -458,6 +471,7 @@ class ConfigStore:
         data["backup"] = self.get_backup_settings()
         data["image_storage"] = self.get_image_storage_settings()
         data["chat_completion_cache"] = self.get_chat_completion_cache_settings()
+        data["announcement"] = self.get_announcement_settings()
         data.pop("auth-key", None)
         return data
 
@@ -476,6 +490,8 @@ class ConfigStore:
             next_data["chat_completion_cache"] = _normalize_chat_completion_cache_settings(
                 next_data.get("chat_completion_cache")
             )
+        if "announcement" in next_data:
+            next_data["announcement"] = _normalize_announcement_settings(next_data.get("announcement"))
         next_data.pop("backup_state", None)
         self.data = next_data
         self._save()
@@ -489,6 +505,17 @@ class ConfigStore:
 
     def get_chat_completion_cache_settings(self) -> dict[str, object]:
         return _normalize_chat_completion_cache_settings(self.data.get("chat_completion_cache"))
+
+    def get_announcement_settings(self) -> dict[str, object]:
+        return _normalize_announcement_settings(self.data.get("announcement"))
+
+    def get_public_announcement_settings(self) -> dict[str, object]:
+        settings = self.get_announcement_settings()
+        message = str(settings.get("message") or "").strip()
+        return {
+            "enabled": bool(settings.get("enabled")) and bool(message),
+            "message": message if bool(settings.get("enabled")) and message else "",
+        }
 
     def get_storage_backend(self) -> StorageBackend:
         """获取存储后端实例（单例）"""

@@ -5,6 +5,7 @@ import { ArrowDown, History, LoaderCircle, Plus, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
 import { ImageComposer } from "@/app/image/components/image-composer";
+import { AnnouncementBanner } from "@/app/image/components/announcement-banner";
 import { ImageResults, type ImageLightboxItem } from "@/app/image/components/image-results";
 import { ImageSidebar } from "@/app/image/components/image-sidebar";
 import { ImageLightbox } from "@/components/image-lightbox";
@@ -21,11 +22,13 @@ import {
   createImageEditTask,
   createImageGenerationTask,
   fetchAccounts,
+  fetchAnnouncement,
   fetchImageConfig,
   fetchImageTasks,
   resumeImagePoll,
   fetchMyQuota,
   type Account,
+  type AnnouncementSettings,
   type ImageModel,
   type ImageTask,
 } from "@/lib/api";
@@ -422,6 +425,7 @@ function ImagePageContent({ isAdmin, subjectId }: { isAdmin: boolean; subjectId:
   const [lightboxOpen, setLightboxOpen] = useState(false);
   const [lightboxIndex, setLightboxIndex] = useState(0);
   const [showScrollToLatest, setShowScrollToLatest] = useState(false);
+  const [announcement, setAnnouncement] = useState<AnnouncementSettings | null>(null);
   const [deleteConfirm, setDeleteConfirm] = useState<
     | { type: "one"; id: string }
     | { type: "prompt"; conversationId: string; turnId: string }
@@ -467,6 +471,28 @@ function ImagePageContent({ isAdmin, subjectId }: { isAdmin: boolean; subjectId:
   useEffect(() => {
     conversationsRef.current = conversations;
   }, [conversations]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadAnnouncement = async () => {
+      try {
+        const data = await fetchAnnouncement();
+        if (!cancelled) {
+          setAnnouncement(data.announcement);
+        }
+      } catch {
+        if (!cancelled) {
+          setAnnouncement(null);
+        }
+      }
+    };
+
+    void loadAnnouncement();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const scrollResultsToLatest = useCallback((behavior: ScrollBehavior = "smooth") => {
     const element = resultsViewportRef.current;
@@ -1433,6 +1459,8 @@ function ImagePageContent({ isAdmin, subjectId }: { isAdmin: boolean; subjectId:
         </Dialog>
 
         <div className="flex min-h-0 flex-col gap-2 sm:gap-4">
+          <AnnouncementBanner announcement={announcement} />
+
           <div className="flex items-center justify-between gap-2 px-1 lg:hidden">
             <Button
               variant="outline"

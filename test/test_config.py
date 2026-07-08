@@ -58,6 +58,38 @@ class ConfigLoadingTests(unittest.TestCase):
                 else:
                     module.os.environ["CHATGPT2API_AUTH_KEY"] = old_env_auth_key
 
+    def test_announcement_defaults_to_hidden(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "config.json"
+            path.write_text(json.dumps({"auth-key": "test-auth"}), encoding="utf-8")
+
+            store = self.config_module.ConfigStore(path)
+
+            self.assertEqual(store.get()["announcement"], {"enabled": False, "message": ""})
+            self.assertEqual(store.get_public_announcement_settings(), {"enabled": False, "message": ""})
+
+    def test_announcement_preserves_admin_enabled_state_but_hides_blank_public_message(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "config.json"
+            path.write_text(json.dumps({"auth-key": "test-auth"}), encoding="utf-8")
+            store = self.config_module.ConfigStore(path)
+
+            updated = store.update({"announcement": {"enabled": True, "message": "   \n  "}})
+
+            self.assertEqual(updated["announcement"], {"enabled": True, "message": ""})
+            self.assertEqual(store.get_public_announcement_settings(), {"enabled": False, "message": ""})
+
+    def test_announcement_trims_message_for_admin_and_public_config(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "config.json"
+            path.write_text(json.dumps({"auth-key": "test-auth"}), encoding="utf-8")
+            store = self.config_module.ConfigStore(path)
+
+            updated = store.update({"announcement": {"enabled": "yes", "message": "  系统维护\n请稍后  "}})
+
+            self.assertEqual(updated["announcement"], {"enabled": True, "message": "系统维护\n请稍后"})
+            self.assertEqual(store.get_public_announcement_settings(), {"enabled": True, "message": "系统维护\n请稍后"})
+
 
 if __name__ == "__main__":
     unittest.main()
