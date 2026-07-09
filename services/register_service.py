@@ -173,6 +173,22 @@ class RegisterService:
             self._config["stats"]["updated_at"] = _now()
             self._save()
 
+    def _mail_cooldown_wait_seconds(self, cfg: dict, retry_after_seconds: int | float | None) -> int | None:
+        mode = str(cfg.get("mode") or "total")
+        if mode not in {"quota", "available"} or not cfg.get("auto_replenish"):
+            return None
+        retry_after = max(1, int(float(retry_after_seconds or 1)))
+        replenish_seconds = max(1, int(cfg.get("replenish_interval") or 30)) * 60
+        return min(retry_after, replenish_seconds)
+
+    def _sleep_while_enabled(self, seconds: int) -> bool:
+        deadline = time.monotonic() + max(0, int(seconds))
+        while time.monotonic() < deadline:
+            if not self.get()["enabled"]:
+                return False
+            time.sleep(min(1.0, max(0.0, deadline - time.monotonic())))
+        return bool(self.get()["enabled"])
+
     def _run(self) -> None:
         threads = int(self.get()["threads"])
         total_done, total_success, total_fail = 0, 0, 0
@@ -189,13 +205,15 @@ class RegisterService:
 
             with ThreadPoolExecutor(max_workers=threads) as executor:
                 futures: set = set()
+                mail_cooldown_seconds: int | None = None
+                stop_for_mail_cooling = False
                 while True:
                     cfg = self.get()
-                    while cfg["enabled"] and not self._target_reached(cfg, submitted) and len(futures) < threads:
+                    while cfg["enabled"] and mail_cooldown_seconds is None and not stop_for_mail_cooling and not self._target_reached(cfg, submitted) and len(futures) < threads:
                         submitted += 1
                         futures.add(executor.submit(openai_register.worker, submitted))
                     self._bump(running=len(futures), done=total_done + done, success=total_success + success, fail=total_fail + fail)
-                    if not futures and (not cfg["enabled"] or self._target_reached(cfg, submitted)):
+                    if not futures and (mail_cooldown_seconds is not None or stop_for_mail_cooling or not cfg["enabled"] or self._target_reached(cfg, submitted)):
                         break
                     if not futures:
                         time.sleep(max(1, int(cfg.get("check_interval") or 5)))
@@ -205,8 +223,19 @@ class RegisterService:
                         done += 1
                         try:
                             result = future.result()
-                            success += 1 if result.get("ok") else 0
-                            fail += 0 if result.get("ok") else 1
+                            if result.get("ok"):
+                                success += 1
+                                continue
+                            if result.get("mail_cooling"):
+                                wait_seconds = self._mail_cooldown_wait_seconds(cfg, result.get("retry_after_seconds"))
+                                if wait_seconds is not None:
+                                    mail_cooldown_seconds = wait_seconds
+                                    for pending in list(futures):
+                                        pending.cancel()
+                                    futures = {pending for pending in futures if not pending.cancelled()}
+                                    continue
+                                stop_for_mail_cooling = True
+                            fail += 1
                         except Exception:
                             fail += 1
 
@@ -216,6 +245,17 @@ class RegisterService:
             self._bump(running=0, done=total_done, success=total_success, fail=total_fail)
 
             cfg = self.get()
+            if mail_cooldown_seconds is not None:
+                if not cfg["enabled"]:
+                    break
+                self._bump(phase="monitoring")
+                self._append_log(f"所有邮箱渠道均在限速冷却中，按限速剩余时间与补充检查间隔取小值，冷却 {mail_cooldown_seconds} 秒后继续", "yellow")
+                if self._sleep_while_enabled(mail_cooldown_seconds):
+                    continue
+                break
+            if stop_for_mail_cooling:
+                self._append_log("所有邮箱渠道均在限速冷却中，当前模式未启用自动补充冷却等待，停止本批次", "yellow")
+                break
             if not cfg["enabled"] or not cfg.get("auto_replenish") or cfg["mode"] == "total":
                 break
 

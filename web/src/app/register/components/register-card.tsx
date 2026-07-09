@@ -73,7 +73,7 @@ export function RegisterCard() {
       enable: true,
       ...(type === "cloudmail_gen" ? { api_base: "", admin_email: "", admin_password: "", domain: [], subdomain: [], email_prefix: "" } : {}),
       ...(type === "cloudflare_temp_email" ? { api_base: "", admin_password: "", domain: [] } : {}),
-      ...(type === "tempmail_lol" ? { api_key: "", domain: [] } : {}),
+      ...(type === "tempmail_lol" ? { api_key: "", account_level: "basic", domain: [] } : {}),
       ...(type === "moemail" ? { api_base: "", api_key: "", domain: [] } : {}),
       ...(type === "inbucket" ? { api_base: "", domain: [], random_subdomain: true } : {}),
       ...(type === "duckmail" ? { api_key: "", default_domain: "duckmail.sbs" } : {}),
@@ -275,6 +275,21 @@ export function RegisterCard() {
                         <div className="space-y-2">
                           <label className="text-sm text-stone-700">API Key</label>
                           <Input value={String(provider.api_key || "")} onChange={(event) => updateProvider(index, { api_key: event.target.value })} className="h-10 rounded-xl border-stone-200 bg-white" disabled={config.enabled} />
+                        </div>
+                      ) : null}
+                      {type === "tempmail_lol" ? (
+                        <div className="space-y-2">
+                          <label className="text-sm text-stone-700">账号等级</label>
+                          <Select value={String(provider.account_level || "basic")} onValueChange={(value) => updateProvider(index, { account_level: value })} disabled={config.enabled}>
+                            <SelectTrigger className="h-10 rounded-xl border-stone-200 bg-white">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="basic">Basic/免费（25/5分钟）</SelectItem>
+                              <SelectItem value="plus">Plus（500/5分钟）</SelectItem>
+                              <SelectItem value="ultra">Ultra（5000/5分钟）</SelectItem>
+                            </SelectContent>
+                          </Select>
                         </div>
                       ) : null}
                       {type === "duckmail" || type === "gptmail" ? (

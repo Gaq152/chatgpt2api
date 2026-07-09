@@ -40,6 +40,19 @@ class RegisterServiceGetJsonTests(unittest.TestCase):
         self.assertEqual(data["logs"][-1]["text"], "log-349")
         self.assertEqual(data["logs"][0]["text"], "log-50")
 
+    def test_mail_cooldown_wait_uses_smaller_of_limit_and_replenish_interval(self) -> None:
+        svc = self._make_service()
+        cfg = {"mode": "quota", "auto_replenish": True, "replenish_interval": 30}
+
+        self.assertEqual(svc._mail_cooldown_wait_seconds(cfg, 600), 600)
+        self.assertEqual(svc._mail_cooldown_wait_seconds(cfg, 3600), 1800)
+
+    def test_mail_cooldown_wait_only_applies_to_auto_replenish_pool_modes(self) -> None:
+        svc = self._make_service()
+
+        self.assertIsNone(svc._mail_cooldown_wait_seconds({"mode": "total", "auto_replenish": True, "replenish_interval": 30}, 600))
+        self.assertIsNone(svc._mail_cooldown_wait_seconds({"mode": "quota", "auto_replenish": False, "replenish_interval": 30}, 600))
+
 
 if __name__ == "__main__":
     unittest.main()

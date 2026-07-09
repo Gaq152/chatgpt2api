@@ -64,6 +64,129 @@ domain_index = 0
 provider_index = 0
 cloudmail_token_lock = Lock()
 cloudmail_token_cache: dict[str, tuple[str, float]] = {}
+rate_limit_lock = Lock()
+tempmail_lol_rate_state: dict[str, dict[str, float]] = {}
+
+TEMPMAIL_LOL_RATE_LIMITS: dict[str, tuple[int, int]] = {
+    "basic": (25, 300),
+    "free": (25, 300),
+    "plus": (500, 300),
+    "ultra": (5000, 300),
+}
+
+
+class MailProviderTemporarilyUnavailable(RuntimeError):
+    def __init__(self, message: str, retry_after_seconds: float, provider: str = "", provider_ref: str = ""):
+        seconds = max(1, int(float(retry_after_seconds or 1) + 0.999))
+        super().__init__(message)
+        self.retry_after_seconds = seconds
+        self.provider = provider
+        self.provider_ref = provider_ref
+
+
+class AllMailProvidersCoolingDown(MailProviderTemporarilyUnavailable):
+    def __init__(self, retry_after_seconds: float, errors: list[MailProviderTemporarilyUnavailable]):
+        self.errors = errors
+        detail = "；".join(str(error) for error in errors if str(error))
+        message = f"所有启用的邮箱提供商均在限速冷却中，约 {max(1, int(retry_after_seconds))} 秒后可重试"
+        if detail:
+            message = f"{message}: {detail}"
+        super().__init__(message, retry_after_seconds)
+
+
+def _retry_after_seconds(value: Any) -> int | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return max(1, int(float(text)))
+    except Exception:
+        return None
+
+
+def _normalize_tempmail_lol_account_level(value: Any) -> str:
+    level = str(value or "basic").strip().lower()
+    if level in {"", "free"}:
+        return "basic"
+    return level if level in {"basic", "plus", "ultra"} else "basic"
+
+
+def _tempmail_lol_rate_limit(entry: dict) -> tuple[str, int, int]:
+    level = _normalize_tempmail_lol_account_level(entry.get("account_level") or entry.get("level"))
+    if not str(entry.get("api_key") or "").strip():
+        level = "basic"
+    limit, window_seconds = TEMPMAIL_LOL_RATE_LIMITS[level]
+    return level, limit, window_seconds
+
+
+def _tempmail_lol_rate_key(entry: dict) -> str:
+    api_key = str(entry.get("api_key") or "").strip()
+    account_key = hashlib.sha256(api_key.encode("utf-8")).hexdigest()[:16] if api_key else "free"
+    return f"tempmail_lol:{account_key}"
+
+
+def _acquire_tempmail_lol_create_slot(entry: dict) -> None:
+    level, limit, window_seconds = _tempmail_lol_rate_limit(entry)
+    key = _tempmail_lol_rate_key(entry)
+    now = time.monotonic()
+    with rate_limit_lock:
+        state = tempmail_lol_rate_state.setdefault(key, {"window_started": now, "count": 0.0, "cooldown_until": 0.0})
+        cooldown_until = float(state.get("cooldown_until") or 0)
+        if cooldown_until > now:
+            retry_after = cooldown_until - now
+            raise MailProviderTemporarilyUnavailable(
+                f"TempMail.lol({level}) 已达到限速，渠道冷却 {int(retry_after + 0.999)} 秒",
+                retry_after,
+                "tempmail_lol",
+                str(entry.get("provider_ref") or ""),
+            )
+
+        window_started = float(state.get("window_started") or now)
+        if now - window_started >= window_seconds:
+            window_started = now
+            state["window_started"] = now
+            state["count"] = 0.0
+
+        count = int(state.get("count") or 0)
+        if count >= limit:
+            cooldown_until = window_started + window_seconds
+            if cooldown_until <= now:
+                state["window_started"] = now
+                state["count"] = 1.0
+                state["cooldown_until"] = 0.0
+                return
+            state["cooldown_until"] = cooldown_until
+            retry_after = cooldown_until - now
+            raise MailProviderTemporarilyUnavailable(
+                f"TempMail.lol({level}) 已达到 {limit}/{window_seconds}秒 限速，渠道冷却 {int(retry_after + 0.999)} 秒",
+                retry_after,
+                "tempmail_lol",
+                str(entry.get("provider_ref") or ""),
+            )
+
+        state["count"] = float(count + 1)
+
+
+def _mark_tempmail_lol_rate_limited(entry: dict, retry_after_seconds: int | None = None) -> MailProviderTemporarilyUnavailable:
+    level, _, window_seconds = _tempmail_lol_rate_limit(entry)
+    retry_after = retry_after_seconds or window_seconds
+    key = _tempmail_lol_rate_key(entry)
+    now = time.monotonic()
+    with rate_limit_lock:
+        state = tempmail_lol_rate_state.setdefault(key, {"window_started": now, "count": 0.0, "cooldown_until": 0.0})
+        state["cooldown_until"] = max(float(state.get("cooldown_until") or 0), now + retry_after)
+    return MailProviderTemporarilyUnavailable(
+        f"TempMail.lol({level}) 返回限速，渠道冷却 {retry_after} 秒",
+        retry_after,
+        "tempmail_lol",
+        str(entry.get("provider_ref") or ""),
+    )
+
+
+def _looks_like_mail_rate_limit_error(error: RuntimeError) -> bool:
+    text = str(error)
+    lowered = text.lower()
+    return ("tempmail.lol" in lowered and ("http 429" in lowered or "rate limited" in lowered)) or "限速" in text
 
 
 def _config(mail_config: dict) -> dict:
@@ -547,7 +670,9 @@ class TempMailLolProvider(BaseMailProvider):
 
     def __init__(self, entry: dict, conf: dict):
         super().__init__(conf, str(entry.get("provider_ref") or ""))
+        self.entry = dict(entry)
         self.api_key = str(entry.get("api_key") or "").strip()
+        self.account_level = _normalize_tempmail_lol_account_level(entry.get("account_level") or entry.get("level"))
         self.domain = [str(item).strip() for item in (entry.get("domain") or []) if str(item).strip()]
         self.session = requests.Session()
         self.session.trust_env = False
@@ -565,6 +690,8 @@ class TempMailLolProvider(BaseMailProvider):
     def _request(self, method: str, path: str, params: dict | None = None, payload: dict | None = None, expected: tuple[int, ...] = (200,)):
         resp = self.session.request(method.upper(), f"https://api.tempmail.lol/v2{path}", params=params, json=payload, timeout=self.conf["request_timeout"], verify=False)
         if resp.status_code not in expected:
+            if resp.status_code == 429:
+                raise _mark_tempmail_lol_rate_limited(self.entry, _retry_after_seconds(resp.headers.get("Retry-After")))
             raise RuntimeError(f"TempMail.lol 请求失败: {method} {path}, HTTP {resp.status_code}, body={resp.text[:300]}")
         data = resp.json()
         if not isinstance(data, dict):
@@ -572,6 +699,7 @@ class TempMailLolProvider(BaseMailProvider):
         return data
 
     def create_mailbox(self, username: str | None = None) -> dict[str, Any]:
+        _acquire_tempmail_lol_create_slot(self.entry)
         payload: dict[str, Any] = {}
         if self.domain:
             domain, force_random_prefix = self._resolve_domain(random.choice(self.domain))
@@ -978,6 +1106,7 @@ def create_mailbox(mail_config: dict, username: str | None = None) -> dict:
     enabled = _enabled_entries(mail_config)
     tried: set[str] = set()
     last_error = ""
+    cooldown_errors: list[MailProviderTemporarilyUnavailable] = []
     for _ in range(len(enabled)):
         provider = _create_provider(mail_config)
         provider_key = f"{provider.name}#{provider.provider_ref}"
@@ -987,12 +1116,28 @@ def create_mailbox(mail_config: dict, username: str | None = None) -> dict:
             tried.add(provider_key)
             mailbox = provider.create_mailbox(username)
             return mailbox
+        except MailProviderTemporarilyUnavailable as error:
+            last_error = str(error)
+            cooldown_errors.append(error)
         except RuntimeError as error:
             last_error = str(error)
+            if _looks_like_mail_rate_limit_error(error):
+                cooldown_errors.append(
+                    MailProviderTemporarilyUnavailable(
+                        f"{provider_key} 触发限速，渠道冷却 300 秒: {last_error}",
+                        300,
+                        provider.name,
+                        provider.provider_ref,
+                    )
+                )
+                continue
             if "DDG日上限已达" not in last_error:
                 raise
         finally:
             provider.close()
+    if cooldown_errors:
+        retry_after = min(error.retry_after_seconds for error in cooldown_errors)
+        raise AllMailProvidersCoolingDown(retry_after, cooldown_errors)
     raise RuntimeError(last_error or "所有启用的邮箱提供商均无法创建邮箱")
 
 

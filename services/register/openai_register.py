@@ -999,6 +999,13 @@ def worker(index: int) -> dict:
             avg = (time.time() - stats["start_time"]) / stats["success"]
         log(f'{result["email"]} 注册成功，本次耗时{cost:.1f}s，全局平均每个号注册耗时{avg:.1f}s', "green")
         return {"ok": True, "index": index, "result": result}
+    except mail_provider.AllMailProvidersCoolingDown as e:
+        cost = time.time() - start
+        with stats_lock:
+            stats["done"] += 1
+        retry_after = max(1, int(getattr(e, "retry_after_seconds", 1) or 1))
+        log(f"任务{index} 邮箱渠道均在限速冷却中，本次耗时{cost:.1f}s，约 {retry_after} 秒后重试", "yellow")
+        return {"ok": False, "index": index, "mail_cooling": True, "retry_after_seconds": retry_after, "error": str(e)}
     except Exception as e:
         cost = time.time() - start
         with stats_lock:
