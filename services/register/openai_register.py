@@ -35,6 +35,22 @@ _blocked_domains_lock = threading.Lock()
 _blocked_domains_loaded = False
 
 _DOMAIN_BLOCK_KEYWORDS = ("unsupported_email", "not supported", "邮箱域名很可能因滥用被封禁")
+_DOMAIN_BLOCK_CODES = {"registration_disallowed"}
+
+
+def _is_domain_block_error(message: str, code: str) -> bool:
+    combined = f"{message} {code}"
+    return (
+        any(kw in combined for kw in _DOMAIN_BLOCK_KEYWORDS)
+        or message == "Failed to create account. Please try again."
+        or code in _DOMAIN_BLOCK_CODES
+    )
+
+
+def _domain_block_reason(message: str, code: str) -> str:
+    if message and code:
+        return f"{message} ({code})"
+    return message or code
 
 
 def _get_storage():
@@ -709,9 +725,8 @@ class PlatformRegistrar:
             if isinstance(data.get("error"), dict):
                 msg = msg or str(data["error"].get("message") or "")
                 err_code = str(data["error"].get("code") or "")
-            combined = f"{msg} {err_code}"
-            if any(kw in combined for kw in _DOMAIN_BLOCK_KEYWORDS) or msg == "Failed to create account. Please try again.":
-                _block_domain(email, msg or err_code)
+            if _is_domain_block_error(msg, err_code):
+                _block_domain(email, _domain_block_reason(msg, err_code))
                 step(index, "注册失败: 邮箱域名已被封禁，已加入黑名单", "yellow")
             detail = f", detail={json.dumps(data, ensure_ascii=False)}" if data else ""
             raise RuntimeError(error or f"user_register_http_{getattr(resp, 'status_code', 'unknown')}{detail}")
@@ -749,9 +764,8 @@ class PlatformRegistrar:
             if isinstance(data.get("error"), dict):
                 msg = msg or str(data["error"].get("message") or "")
                 err_code = str(data["error"].get("code") or "")
-            combined = f"{msg} {err_code}"
-            if any(kw in combined for kw in _DOMAIN_BLOCK_KEYWORDS) or msg == "Failed to create account. Please try again.":
-                _block_domain(self._current_email, msg or err_code)
+            if _is_domain_block_error(msg, err_code):
+                _block_domain(self._current_email, _domain_block_reason(msg, err_code))
                 step(index, "创建账号失败: 邮箱域名已被封禁，已加入黑名单", "yellow")
             detail = f", detail={json.dumps(data, ensure_ascii=False)}" if data else ""
             raise RuntimeError(error or f"create_account_http_{getattr(resp, 'status_code', 'unknown')}{detail}")
