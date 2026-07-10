@@ -3,6 +3,7 @@ import hashlib
 import json
 import mimetypes
 import re
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -193,16 +194,47 @@ def anthropic_sse_stream(items) -> Iterator[str]:
         yield f"data: {json.dumps(error, ensure_ascii=False)}\n\n"
 
 
-def iter_sse_payloads(response: requests.Response) -> Iterator[str]:
-    for raw_line in response.iter_lines():
-        if not raw_line:
-            continue
-        line = raw_line.decode("utf-8", errors="ignore") if isinstance(raw_line, bytes) else str(raw_line)
-        if not line.startswith("data:"):
-            continue
-        payload = line[5:].strip()
-        if payload:
-            yield payload
+def iter_sse_payloads(response: requests.Response, deadline: float = 0) -> Iterator[str]:
+    timeout_message = "图片任务总耗时超时，请检查号池状态或稍后重试"
+    timer: threading.Timer | None = None
+    if deadline:
+        delay = deadline - time.time()
+        if delay <= 0:
+            raise TimeoutError(timeout_message)
+
+        def close_response() -> None:
+            close = getattr(response, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:
+                    pass
+
+        timer = threading.Timer(delay, close_response)
+        timer.daemon = True
+        timer.start()
+    try:
+        try:
+            for raw_line in response.iter_lines():
+                if deadline and time.time() >= deadline:
+                    raise TimeoutError(timeout_message)
+                if not raw_line:
+                    continue
+                line = raw_line.decode("utf-8", errors="ignore") if isinstance(raw_line, bytes) else str(raw_line)
+                if not line.startswith("data:"):
+                    continue
+                payload = line[5:].strip()
+                if payload:
+                    yield payload
+        except Exception as exc:
+            if deadline and time.time() >= deadline:
+                raise TimeoutError(timeout_message) from exc
+            raise
+        if deadline and time.time() >= deadline:
+            raise TimeoutError(timeout_message)
+    finally:
+        if timer is not None:
+            timer.cancel()
 
 
 def save_images_from_text(text: str, prefix: str) -> list[Path]:

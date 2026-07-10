@@ -983,10 +983,11 @@ class OpenAIBackendAPI:
             prompt: str = "",
             images: Optional[list[str]] = None,
             system_hints: Optional[list[str]] = None,
+            deadline: float = 0,
     ) -> Iterator[str]:
         system_hints = system_hints or []
         if "picture_v2" in system_hints:
-            yield from self._stream_picture_conversation(prompt, model, images or [])
+            yield from self._stream_picture_conversation(prompt, model, images or [], deadline=deadline)
             return
 
         normalized = messages or [{"role": "user", "content": prompt}]
@@ -1003,7 +1004,7 @@ class OpenAIBackendAPI:
         )
         ensure_ok(response, path)
         try:
-            yield from iter_sse_payloads(response)
+            yield from iter_sse_payloads(response, deadline=deadline)
         finally:
             response.close()
 
@@ -1020,6 +1021,7 @@ class OpenAIBackendAPI:
             prompt: str,
             model: str,
             images: list[str],
+            deadline: float = 0,
     ) -> Iterator[str]:
         if not self.access_token:
             raise RuntimeError("access_token is required for image endpoints")
@@ -1035,7 +1037,7 @@ class OpenAIBackendAPI:
         response = self._start_image_generation(prompt, requirements, conduit_token, model, references)
         self._report_progress("generating")
         try:
-            yield from iter_sse_payloads(response)
+            yield from iter_sse_payloads(response, deadline=deadline)
         finally:
             response.close()
 

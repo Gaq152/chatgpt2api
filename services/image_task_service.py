@@ -23,6 +23,10 @@ TERMINAL_STATUSES = {TASK_STATUS_SUCCESS, TASK_STATUS_ERROR}
 UNFINISHED_STATUSES = {TASK_STATUS_QUEUED, TASK_STATUS_RUNNING}
 
 
+class ImageTaskTimeoutError(TimeoutError):
+    pass
+
+
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -110,11 +114,13 @@ class ImageTaskService:
         generation_handler: Callable[[dict[str, Any]], dict[str, Any]] = openai_v1_image_generations.handle,
         edit_handler: Callable[[dict[str, Any]], dict[str, Any]] = openai_v1_image_edit.handle,
         retention_days_getter: Callable[[], int] | None = None,
+        timeout_secs_getter: Callable[[], float] | None = None,
     ):
         self.path = path
         self.generation_handler = generation_handler
         self.edit_handler = edit_handler
         self.retention_days_getter = retention_days_getter or (lambda: config.image_retention_days)
+        self.timeout_secs_getter = timeout_secs_getter or (lambda: config.image_poll_timeout_secs)
         self._lock = threading.RLock()
         self._tasks: dict[str, dict[str, Any]] = {}
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -283,11 +289,16 @@ class ImageTaskService:
                 except Exception:
                     pass
 
-        deadline = started + TASK_TOTAL_TIMEOUT_SECS
+        timeout_secs = self._task_timeout_secs()
+        deadline = started + timeout_secs
         payload_with_progress = {**payload, "progress_callback": progress_callback, "deadline": deadline}
         try:
             handler = self.edit_handler if mode == "edit" else self.generation_handler
-            result = handler(payload_with_progress)
+            result = self._call_handler_with_timeout(
+                handler,
+                payload_with_progress,
+                max(0.0, deadline - time.time()),
+            )
             if not isinstance(result, dict):
                 raise RuntimeError("image task returned streaming result unexpectedly")
             data = result.get("data")
@@ -372,6 +383,43 @@ class ImageTaskService:
                 request_quality=req_quality,
                 request_n=req_n,
             )
+
+    def _task_timeout_secs(self) -> float:
+        try:
+            value = float(self.timeout_secs_getter())
+        except Exception:
+            value = float(TASK_TOTAL_TIMEOUT_SECS)
+        return max(0.01, value)
+
+    @staticmethod
+    def _call_handler_with_timeout(
+        handler: Callable[[dict[str, Any]], dict[str, Any]],
+        payload: dict[str, Any],
+        timeout_secs: float,
+    ) -> dict[str, Any]:
+        done = threading.Event()
+        box: dict[str, Any] = {}
+
+        def target() -> None:
+            try:
+                box["result"] = handler(payload)
+            except Exception as exc:
+                box["error"] = exc
+            finally:
+                done.set()
+
+        thread = threading.Thread(target=target, name="image-upstream-call", daemon=True)
+        thread.start()
+        if not done.wait(timeout=max(0.0, timeout_secs)):
+            display_timeout = f"{timeout_secs:.2f}".rstrip("0").rstrip(".")
+            raise ImageTaskTimeoutError(
+                f"图片任务超时（已等待 {display_timeout} 秒）。"
+                "请检查号池状态或稍后重试。"
+            )
+        error = box.get("error")
+        if error is not None:
+            raise error
+        return box.get("result")
 
     @staticmethod
     def _consume_user_quota(identity: dict[str, object]) -> None:

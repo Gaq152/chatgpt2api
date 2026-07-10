@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import threading
 import tempfile
 import time
 import unittest
@@ -26,12 +27,13 @@ def wait_for_task(service: ImageTaskService, identity: dict[str, object], task_i
 
 
 class ImageTaskServiceTests(unittest.TestCase):
-    def make_service(self, path: Path, handler=None) -> ImageTaskService:
+    def make_service(self, path: Path, handler=None, timeout_secs_getter=None) -> ImageTaskService:
         return ImageTaskService(
             path,
             generation_handler=handler or (lambda _payload: {"data": [{"url": "http://example.test/image.png"}]}),
             edit_handler=handler or (lambda _payload: {"data": [{"url": "http://example.test/edit.png"}]}),
             retention_days_getter=lambda: 30,
+            timeout_secs_getter=timeout_secs_getter,
         )
 
     def test_duplicate_submit_uses_existing_task(self):
@@ -143,6 +145,42 @@ class ImageTaskServiceTests(unittest.TestCase):
 
             self.assertEqual([item["status"] for item in result["items"]], ["error", "error"])
             self.assertTrue(all("已中断" in item.get("error", "") for item in result["items"]))
+
+    def test_generation_task_times_out_when_handler_blocks(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            started = threading.Event()
+            release = threading.Event()
+            observed_deadlines: list[float] = []
+
+            def handler(payload):
+                observed_deadlines.append(float(payload.get("deadline") or 0) - time.time())
+                started.set()
+                release.wait(timeout=2.0)
+                return {"data": [{"url": "http://example.test/late.png"}]}
+
+            service = self.make_service(
+                Path(tmp_dir) / "image_tasks.json",
+                handler,
+                timeout_secs_getter=lambda: 0.05,
+            )
+
+            service.submit_generation(
+                OWNER,
+                client_task_id="timeout-task",
+                prompt="cat",
+                model="gpt-image-2",
+                size=None,
+                base_url="http://local.test",
+            )
+
+            self.assertTrue(started.wait(timeout=0.5))
+            task = wait_for_task(service, OWNER, "timeout-task", "error", timeout=1.0)
+            release.set()
+
+            self.assertIn("超时", task.get("error", ""))
+            self.assertLess(task.get("duration_ms", 9999), 1000)
+            self.assertTrue(observed_deadlines)
+            self.assertLessEqual(observed_deadlines[0], 0.2)
 
 
 if __name__ == "__main__":

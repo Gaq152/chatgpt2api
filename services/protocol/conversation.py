@@ -53,12 +53,36 @@ def is_token_invalid_error(message: str) -> bool:
     )
 
 
+def is_tls_connection_error(message: str) -> bool:
+    text = str(message or "").lower()
+    return (
+        "curl: (35)" in text
+        or "tls connect error" in text
+        or "openssl_internal" in text
+        or "ssl connect" in text
+    )
+
+
+def is_connection_timeout_error(message: str) -> bool:
+    text = str(message or "").lower()
+    return (
+        "curl: (28)" in text
+        or "curl: (92)" in text
+        or "http/2 stream" in text
+        or "internal_error" in text
+        or "timed out" in text
+        or "timeout" in text
+        or "connection aborted" in text
+        or "connection reset" in text
+        or "stream was not closed cleanly" in text
+    )
+
+
 def image_stream_error_message(message: str) -> str:
     text = str(message or "")
-    lower = text.lower()
     if is_token_invalid_error(text):
         return "image generation failed"
-    if "curl: (35)" in lower or "tls connect error" in lower or "openssl_internal" in lower:
+    if is_tls_connection_error(text) or is_connection_timeout_error(text):
         return "upstream image connection failed, please retry later"
     return text or "image generation failed"
 
@@ -225,6 +249,12 @@ class ConversationState:
     blocked: bool = False
     tool_invoked: bool | None = None
     turn_use_case: str = ""
+
+
+class ConversationStreamError(RuntimeError):
+    def __init__(self, message: str, state: ConversationState) -> None:
+        super().__init__(message)
+        self.state = state
 
 
 @dataclass
@@ -484,37 +514,49 @@ def iter_conversation_payloads(payloads: Iterator[str], history_text: str = "",
     state = ConversationState()
     history_messages = history_messages or []
     history_index = 0
-    for payload in payloads:
+    try:
+        iterator = iter(payloads)
+        while True:
+            try:
+                payload = next(iterator)
+            except StopIteration:
+                break
+            except Exception as exc:
+                if state.conversation_id or state.file_ids or state.sediment_ids:
+                    raise ConversationStreamError(str(exc) or "conversation stream failed", state) from exc
+                raise
         # print(f"[upstream_sse] {payload}", flush=True)
-        if not payload:
-            continue
-        if payload == "[DONE]":
-            yield conversation_base_event("conversation.done", state, done=True)
-            break
-        try:
-            event = json.loads(payload)
-        except json.JSONDecodeError:
-            update_conversation_state(state, payload)
-            yield conversation_base_event("conversation.raw", state, payload=payload)
-            continue
-        if not isinstance(event, dict):
+            if not payload:
+                continue
+            if payload == "[DONE]":
+                yield conversation_base_event("conversation.done", state, done=True)
+                break
+            try:
+                event = json.loads(payload)
+            except json.JSONDecodeError:
+                update_conversation_state(state, payload)
+                yield conversation_base_event("conversation.raw", state, payload=payload)
+                continue
+            if not isinstance(event, dict):
+                yield conversation_base_event("conversation.event", state, raw=event)
+                continue
+            update_conversation_state(state, payload, event)
+            if history_index < len(history_messages) and event_assistant_text(event, history_text) == history_messages[history_index]:
+                history_index += 1
+                state.raw_text = ""
+                state.text = ""
+                continue
+            next_raw_text = assistant_raw_text(event, state.raw_text, history_text)
+            next_text = sanitize_output_text(next_raw_text)
+            state.raw_text = next_raw_text
+            if next_text != state.text:
+                delta = next_text[len(state.text):] if next_text.startswith(state.text) else next_text
+                state.text = next_text
+                yield conversation_base_event("conversation.delta", state, raw=event, delta=delta)
+                continue
             yield conversation_base_event("conversation.event", state, raw=event)
-            continue
-        update_conversation_state(state, payload, event)
-        if history_index < len(history_messages) and event_assistant_text(event, history_text) == history_messages[history_index]:
-            history_index += 1
-            state.raw_text = ""
-            state.text = ""
-            continue
-        next_raw_text = assistant_raw_text(event, state.raw_text, history_text)
-        next_text = sanitize_output_text(next_raw_text)
-        state.raw_text = next_raw_text
-        if next_text != state.text:
-            delta = next_text[len(state.text):] if next_text.startswith(state.text) else next_text
-            state.text = next_text
-            yield conversation_base_event("conversation.delta", state, raw=event, delta=delta)
-            continue
-        yield conversation_base_event("conversation.event", state, raw=event)
+    except ConversationStreamError:
+        raise
 
 
 def conversation_events(
@@ -525,6 +567,7 @@ def conversation_events(
     images: list[str] | None = None,
     size: str | None = None,
     quality: str = "auto",
+    deadline: float = 0,
 ) -> Iterator[dict[str, Any]]:
     normalized = normalize_messages(messages or ([{"role": "user", "content": prompt}] if prompt else []))
     image_model = str(model or "").strip() in IMAGE_MODELS
@@ -537,6 +580,7 @@ def conversation_events(
         prompt=final_prompt,
         images=images if image_model else None,
         system_hints=["picture_v2"] if image_model else None,
+        deadline=deadline,
     )
     yield from iter_conversation_payloads(payloads, history_text, history_messages)
 
@@ -590,37 +634,52 @@ def stream_image_outputs(
         request: ConversationRequest,
         index: int = 1,
         total: int = 1,
+        deadline: float = 0,
 ) -> Iterator[ImageOutput]:
     last: dict[str, Any] = {}
-    for event in conversation_events(
-            backend,
-            prompt=request.prompt,
-            model=request.model,
-            images=request.images or [],
-            size=request.size,
-            quality=request.quality,
-    ):
-        last = event
-        if event.get("type") == "conversation.delta":
-            yield ImageOutput(
-                kind="progress",
+    try:
+        for event in conversation_events(
+                backend,
+                prompt=request.prompt,
                 model=request.model,
-                index=index,
-                total=total,
-                text=str(event.get("delta") or ""),
-                upstream_event_type="conversation.delta",
-            )
-            continue
-        if event.get("type") == "conversation.event":
-            raw = event.get("raw")
-            raw_type = str(raw.get("type") or "") if isinstance(raw, dict) else ""
-            yield ImageOutput(
-                kind="progress",
-                model=request.model,
-                index=index,
-                total=total,
-                upstream_event_type=raw_type,
-            )
+                images=request.images or [],
+                size=request.size,
+                quality=request.quality,
+                deadline=deadline,
+        ):
+            last = event
+            if event.get("type") == "conversation.delta":
+                yield ImageOutput(
+                    kind="progress",
+                    model=request.model,
+                    index=index,
+                    total=total,
+                    text=str(event.get("delta") or ""),
+                    upstream_event_type="conversation.delta",
+                )
+                continue
+            if event.get("type") == "conversation.event":
+                raw = event.get("raw")
+                raw_type = str(raw.get("type") or "") if isinstance(raw, dict) else ""
+                yield ImageOutput(
+                    kind="progress",
+                    model=request.model,
+                    index=index,
+                    total=total,
+                    upstream_event_type=raw_type,
+                )
+    except ConversationStreamError as exc:
+        state = exc.state
+        if not (state.conversation_id or state.file_ids or state.sediment_ids):
+            raise
+        logger.warning({
+            "event": "image_stream_drop_poll_fallback",
+            "conversation_id": state.conversation_id,
+            "file_ids": state.file_ids,
+            "sediment_ids": state.sediment_ids,
+            "error": str(exc),
+        })
+        last = conversation_base_event("conversation.stream_error", state, error=str(exc))
 
     conversation_id = str(last.get("conversation_id") or "")
     file_ids = [str(item) for item in last.get("file_ids") or []]
@@ -642,7 +701,13 @@ def stream_image_outputs(
         yield ImageOutput(kind="message", model=request.model, index=index, total=total, text=message)
         return
 
-    image_urls = backend.resolve_conversation_image_urls(conversation_id, file_ids, sediment_ids)
+    poll_timeout = max(0.0, deadline - time.time()) if deadline else None
+    image_urls = backend.resolve_conversation_image_urls(
+        conversation_id,
+        file_ids,
+        sediment_ids,
+        poll_timeout_secs=poll_timeout,
+    )
     if image_urls:
         image_items = [
             {"b64_json": base64.b64encode(image_data).decode("ascii")}
@@ -696,7 +761,7 @@ def stream_image_outputs_with_pool(request: ConversationRequest, deadline: float
                 if acct:
                     token_email = str(acct.get("email") or "").strip()
                 backend = OpenAIBackendAPI(access_token=token)
-                for output in stream_image_outputs(backend, request, index, request.n):
+                for output in stream_image_outputs(backend, request, index, request.n, deadline=deadline):
                     if output.kind == "message" and request.message_as_error:
                         exc = ImageGenerationError(
                             output.text or "Image generation was rejected by upstream policy.",
